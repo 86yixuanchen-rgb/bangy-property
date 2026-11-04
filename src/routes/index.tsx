@@ -254,21 +254,34 @@ function Dashboard() {
                 ))}
               </div>
             </div>
-            <label className="flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm">
-              <Filter className="h-4 w-4 text-muted-foreground" />
-              <span className="sr-only sm:not-sr-only">Priority</span>
-              <select
-                value={priority}
-                onChange={(e) => setPriority(e.target.value as "All" | Priority)}
-                className="bg-transparent outline-none"
-              >
-                <option>All</option>
-                <option>Urgent</option>
-                <option>High</option>
-                <option>Medium</option>
-                <option>Low</option>
-              </select>
-            </label>
+            <div className="flex items-center gap-2">
+              {priority !== "All" && (
+                <button
+                  className="filter-reset"
+                  onClick={() => setPriority("All")}
+                  aria-label="Clear priority filter"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Clear filter
+                </button>
+              )}
+              <label className="flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm">
+                <Filter className="h-4 w-4 text-muted-foreground" />
+                <span className="sr-only sm:not-sr-only">Priority</span>
+                <select
+                  aria-label="Filter priority"
+                  value={priority}
+                  onChange={(e) => setPriority(e.target.value as "All" | Priority)}
+                  className="bg-transparent outline-none"
+                >
+                  <option>All</option>
+                  <option>Urgent</option>
+                  <option>High</option>
+                  <option>Medium</option>
+                  <option>Low</option>
+                </select>
+              </label>
+            </div>
           </div>
           {view === "list" ? (
             <div className="overflow-x-auto rounded-lg border bg-card shadow-card">

@@ -81,7 +81,10 @@ export function AppShell({
       const editing =
         event.target instanceof HTMLElement &&
         event.target.closest("input, textarea, select, [contenteditable='true']") !== null;
-      if (event.key === "/" && !editing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (
+        (event.key === "/" && !editing && !event.ctrlKey && !event.metaKey && !event.altKey) ||
+        (event.key.toLowerCase() === "k" && (event.ctrlKey || event.metaKey) && !event.altKey)
+      ) {
         event.preventDefault();
         searchRef.current?.focus();
       }
@@ -171,12 +174,10 @@ export function AppShell({
     <aside className="app-sidebar h-full w-56 shrink-0 border-r bg-sidebar p-3">
       <div className="sidebar-caption">Workspace</div>
       <nav className="space-y-0.5" aria-label="Main navigation">
-        {nav.map((n, index) => {
+        {nav.map((n) => {
           const inner = (
             <>
-              <span className="nav-index" aria-hidden="true">
-                {String(index + 1).padStart(2, "0")}
-              </span>
+              <n.icon className="h-4 w-4" />
               <span className="flex-1">{n.label}</span>
               {n.to === "/inbox" && unreadCount > 0 ? (
                 <span className="rounded bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
@@ -230,9 +231,14 @@ export function AppShell({
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search repairs…"
             aria-label="Global search"
-            aria-keyshortcuts="/"
+            aria-keyshortcuts="/ Control+k Meta+k"
             className="h-9 w-full rounded-md border bg-muted pl-9 pr-8 text-sm outline-none focus:border-ring focus:bg-card"
           />
+          {!search && (
+            <kbd className="search-shortcut" aria-hidden="true">
+              Ctrl K
+            </kbd>
+          )}
           {search ? (
             <button
               onClick={() => setSearch("")}
