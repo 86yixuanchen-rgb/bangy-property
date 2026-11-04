@@ -114,7 +114,7 @@ function emailEntry(m: IncidentEmail, roleOf: Map<string, string>): Entry {
 
 function Detail() {
   const { id } = Route.useParams();
-  const { requests, loaded, loadError, retryRequests, updateRequest, notify } = useWorkspace();
+  const { requests, updateRequest, notify } = useWorkspace();
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [reminderOpen, setReminderOpen] = useState(false);
@@ -177,21 +177,6 @@ function Detail() {
     }
   }, [d]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!loaded || loadError) {
-    return (
-      <AppShell>
-        <div role={loadError ? "alert" : "status"} className="repair-empty">
-          <p>{loadError ? "Could not load this repair." : "Loading repair details…"}</p>
-          {loadError && (
-            <button onClick={retryRequests} className="secondary-action mt-4">
-              Try again
-            </button>
-          )}
-        </div>
-      </AppShell>
-    );
-  }
-
   if (!r) {
     return (
       <AppShell>
@@ -202,7 +187,7 @@ function Detail() {
             This repair request doesn't exist or may have been removed.
           </p>
           <Link to="/" className="text-sm font-medium text-primary hover:underline">
-            Back to repairs
+            Back to board
           </Link>
         </div>
       </AppShell>
@@ -347,13 +332,13 @@ function Detail() {
 
   return (
     <AppShell>
-      <div className="mx-auto repair-detail max-w-6xl space-y-6 p-4 sm:p-6 lg:p-8">
+      <div className="repair-detail mx-auto max-w-6xl space-y-6 p-4 sm:p-6 lg:p-8">
         <Link
           to="/"
           className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
           <ChevronLeft className="h-4 w-4" />
-          Back to repairs
+          Back to board
         </Link>
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
@@ -412,7 +397,7 @@ function Detail() {
               {r.status}
             </span>
             <span className="text-muted-foreground">
-              Next to act <span className="font-medium text-foreground">{r.waitingOn}</span>
+              Waiting on <span className="font-medium text-foreground">{r.waitingOn}</span>
             </span>
             <span className="text-muted-foreground">Updated {r.lastUpdate}</span>
           </div>
@@ -420,28 +405,11 @@ function Detail() {
 
         <div className="grid gap-6 lg:grid-cols-3">
           <div className="space-y-6 lg:col-span-2">
-            <div className="confirmed-action rounded-lg border border-primary/20 bg-primary-soft p-5">
-              <div className="text-xs font-semibold uppercase tracking-wide text-primary">
-                Current next action
-              </div>
-              <div className="mt-1 text-lg font-semibold">{r.nextAction}</div>
-              <div className="text-sm text-muted-foreground">Next to act: {r.waitingOn}</div>
-              <div className="mt-4 flex gap-2">
-                <button
-                  onClick={openReminder}
-                  className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-                >
-                  <Bell className="h-4 w-4" />
-                  Send Reminder
-                </button>
-              </div>
-            </div>
-
             <div className="ai-review rounded-lg border bg-card p-5">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-ai">
                   <Sparkles className="h-4 w-4" />
-                  AI suggestion · needs review
+                  AI suggested next step
                 </div>
                 <button
                   onClick={() => void analyze()}
@@ -473,7 +441,7 @@ function Detail() {
                       className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
                     >
                       <Check className="h-4 w-4" />
-                      Approve suggested next action
+                      Apply to request
                     </button>
                     <span className="text-xs text-muted-foreground">
                       Generated {formatWhen(d.ai.updatedAt)}. Nothing changes until you apply it.
@@ -492,123 +460,21 @@ function Detail() {
               {aiError ? <p className="mt-2 text-xs text-destructive">{aiError}</p> : null}
             </div>
 
-            <div className="rounded-lg border bg-card p-5 shadow-card">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="font-semibold">Activity timeline</h2>
+            <div className="confirmed-action rounded-lg border bg-primary-soft p-5">
+              <div className="text-xs font-semibold uppercase tracking-wide text-primary">
+                Current next action
+              </div>
+              <div className="mt-1 text-lg font-semibold">{r.nextAction}</div>
+              <div className="text-sm text-muted-foreground">Waiting on {r.waitingOn}</div>
+              <div className="mt-4 flex gap-2">
                 <button
-                  onClick={() => setNoteOpen(true)}
-                  className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
+                  onClick={openReminder}
+                  className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
                 >
-                  <Plus className="h-3.5 w-3.5" />
-                  Add note
+                  <Bell className="h-4 w-4" />
+                  Send Reminder
                 </button>
               </div>
-              {incident.isError ? (
-                <div role="alert" className="text-sm">
-                  <p>Could not load activity.</p>
-                  <button className="secondary-action mt-3" onClick={() => void incident.refetch()}>
-                    Try again
-                  </button>
-                </div>
-              ) : incident.isLoading ? (
-                <p className="text-sm text-muted-foreground">Loading activity…</p>
-              ) : (
-                <ol className="relative space-y-5 border-l pl-6">
-                  {entries.length === 0 ? (
-                    <li className="text-sm text-muted-foreground">
-                      No activity yet.{" "}
-                      {d?.gmailConnected
-                        ? "Add the people involved and their emails will appear here."
-                        : "Connect Gmail in the Inbox and add the people involved to see their emails here."}
-                    </li>
-                  ) : null}
-                  {entries.map((t) => {
-                    const isMail = t.kind === "email-in" || t.kind === "email-out";
-                    const open = expanded === t.key;
-                    return (
-                      <li key={t.key} className="relative">
-                        <span
-                          className={`absolute -left-[31px] grid h-5 w-5 place-items-center rounded-full border bg-card ${
-                            t.kind === "status" ? "border-primary" : ""
-                          }`}
-                        >
-                          {t.kind === "email-out" ? (
-                            <Send className="h-3 w-3 text-primary" />
-                          ) : isMail ? (
-                            <Mail className="h-3 w-3 text-primary" />
-                          ) : t.kind === "note" ? (
-                            <StickyNote className="h-3 w-3 text-done" />
-                          ) : t.kind === "quote" ? (
-                            <FileText className="h-3 w-3 text-primary" />
-                          ) : t.kind === "appointment" ? (
-                            <CalendarDays className="h-3 w-3 text-primary" />
-                          ) : (
-                            <Flag className="h-3 w-3 text-primary" />
-                          )}
-                        </span>
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                          <span>{formatWhen(t.at)}</span>
-                          <span>·</span>
-                          <span>{t.who}</span>
-                          {isMail || t.kind === "note" ? (
-                            <span
-                              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${roleTone[t.role] ?? "bg-muted text-muted-foreground"}`}
-                            >
-                              {t.kind === "note" ? "Internal note" : t.role}
-                            </span>
-                          ) : null}
-                        </div>
-                        <div className="text-sm font-medium">
-                          {isMail ? (t.kind === "email-out" ? "Sent: " : "") : ""}
-                          {t.title}
-                        </div>
-                        {isMail ? (
-                          <>
-                            <button
-                              onClick={() => setExpanded(open ? null : t.key)}
-                              className="mt-1 text-xs text-primary hover:underline"
-                            >
-                              {open ? "Hide email" : "Read email"}
-                            </button>
-                            {open ? (
-                              <p className="mt-2 whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-sm">
-                                {t.body}
-                              </p>
-                            ) : null}
-                            {t.role === "Unassigned" && t.counterpart ? (
-                              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                                Add {t.counterpart.email} as
-                                {participantRoles.map((role) => (
-                                  <button
-                                    key={role}
-                                    onClick={() =>
-                                      void addSender(
-                                        role,
-                                        t.counterpart?.name ?? "",
-                                        t.counterpart?.email ?? "",
-                                      )
-                                    }
-                                    className="rounded border px-1.5 py-0.5 hover:bg-muted"
-                                  >
-                                    {role}
-                                  </button>
-                                ))}
-                              </div>
-                            ) : null}
-                          </>
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                  <li className="relative">
-                    <span className="absolute -left-[31px] grid h-5 w-5 place-items-center rounded-full bg-waiting">
-                      <Hourglass className="h-3 w-3 text-primary-foreground" />
-                    </span>
-                    <div className="text-xs text-muted-foreground">Current state</div>
-                    <div className="text-sm font-semibold text-waiting">{r.status}</div>
-                  </li>
-                </ol>
-              )}
             </div>
 
             <div className="rounded-lg border bg-card p-5 shadow-card">
@@ -782,6 +648,118 @@ function Detail() {
                   </div>
                 ))}
               </div>
+            </div>
+
+            <div className="rounded-lg border bg-card p-5 shadow-card">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="font-semibold">Activity timeline</h2>
+                <button
+                  onClick={() => setNoteOpen(true)}
+                  className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Add note
+                </button>
+              </div>
+              {incident.isLoading ? (
+                <p className="text-sm text-muted-foreground">Loading activity…</p>
+              ) : (
+                <ol className="relative space-y-5 border-l pl-6">
+                  {entries.length === 0 ? (
+                    <li className="text-sm text-muted-foreground">
+                      No activity yet.{" "}
+                      {d?.gmailConnected
+                        ? "Add the people involved and their emails will appear here."
+                        : "Connect Gmail in the Unified Inbox and add the people involved to see their emails here."}
+                    </li>
+                  ) : null}
+                  {entries.map((t) => {
+                    const isMail = t.kind === "email-in" || t.kind === "email-out";
+                    const open = expanded === t.key;
+                    return (
+                      <li key={t.key} className="relative">
+                        <span
+                          className={`absolute -left-[31px] grid h-5 w-5 place-items-center rounded-full border bg-card ${
+                            t.kind === "status" ? "border-primary" : ""
+                          }`}
+                        >
+                          {t.kind === "email-out" ? (
+                            <Send className="h-3 w-3 text-primary" />
+                          ) : isMail ? (
+                            <Mail className="h-3 w-3 text-primary" />
+                          ) : t.kind === "note" ? (
+                            <StickyNote className="h-3 w-3 text-done" />
+                          ) : t.kind === "quote" ? (
+                            <FileText className="h-3 w-3 text-primary" />
+                          ) : t.kind === "appointment" ? (
+                            <CalendarDays className="h-3 w-3 text-primary" />
+                          ) : (
+                            <Flag className="h-3 w-3 text-primary" />
+                          )}
+                        </span>
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                          <span>{formatWhen(t.at)}</span>
+                          <span>·</span>
+                          <span>{t.who}</span>
+                          {isMail || t.kind === "note" ? (
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${roleTone[t.role] ?? "bg-muted text-muted-foreground"}`}
+                            >
+                              {t.kind === "note" ? "Internal note" : t.role}
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="text-sm font-medium">
+                          {isMail ? (t.kind === "email-out" ? "Sent: " : "") : ""}
+                          {t.title}
+                        </div>
+                        {isMail ? (
+                          <>
+                            <button
+                              onClick={() => setExpanded(open ? null : t.key)}
+                              className="mt-1 text-xs text-primary hover:underline"
+                            >
+                              {open ? "Hide email" : "Read email"}
+                            </button>
+                            {open ? (
+                              <p className="mt-2 whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-sm">
+                                {t.body}
+                              </p>
+                            ) : null}
+                            {t.role === "Unassigned" && t.counterpart ? (
+                              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                                Add {t.counterpart.email} as
+                                {participantRoles.map((role) => (
+                                  <button
+                                    key={role}
+                                    onClick={() =>
+                                      void addSender(
+                                        role,
+                                        t.counterpart?.name ?? "",
+                                        t.counterpart?.email ?? "",
+                                      )
+                                    }
+                                    className="rounded border px-1.5 py-0.5 hover:bg-muted"
+                                  >
+                                    {role}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+                          </>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                  <li className="relative">
+                    <span className="absolute -left-[31px] grid h-5 w-5 place-items-center rounded-full bg-waiting">
+                      <Hourglass className="h-3 w-3 text-primary-foreground" />
+                    </span>
+                    <div className="text-xs text-muted-foreground">Current state</div>
+                    <div className="text-sm font-semibold text-waiting">{r.status}</div>
+                  </li>
+                </ol>
+              )}
             </div>
           </div>
 

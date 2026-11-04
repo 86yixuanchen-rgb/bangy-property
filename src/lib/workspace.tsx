@@ -9,8 +9,6 @@ export type Toast = { id: number; message: string };
 type WorkspaceValue = {
   requests: RepairRequest[];
   loaded: boolean;
-  loadError: boolean;
-  retryRequests: () => void;
   addRequest: (input: {
     title: string;
     address: string;
@@ -27,7 +25,7 @@ const WorkspaceContext = createContext<WorkspaceValue | null>(null);
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const { isSignedIn } = useAuth();
-  const { data, isError, refetch } = useQuery({
+  const { data } = useQuery({
     queryKey: ["requests"],
     queryFn: () => listRequests(),
     enabled: isSignedIn,
@@ -51,10 +49,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return {
       requests,
       loaded: data !== undefined,
-      loadError: isError,
-      retryRequests: () => {
-        void refetch();
-      },
       addRequest: async (input) => {
         const item = await createRequest({ data: input });
         queryClient.setQueryData<RepairRequest[]>(["requests"], (items) => [
@@ -76,7 +70,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       notify,
       dismissToast: (id) => setToasts((items) => items.filter((item) => item.id !== id)),
     };
-  }, [requests, data, isError, refetch, toasts, queryClient]);
+  }, [requests, data, toasts, queryClient]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

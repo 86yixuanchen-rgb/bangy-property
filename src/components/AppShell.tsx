@@ -1,6 +1,7 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  Home,
   Inbox,
   ClipboardList,
   Building2,
@@ -25,8 +26,9 @@ import { useQuery } from "@tanstack/react-query";
 import { getInbox } from "@/lib/gmail.functions";
 
 const nav = [
-  { label: "Inbox", icon: Inbox, to: "/inbox" as const },
-  { label: "Repairs", icon: ClipboardList, to: "/" as const, view: "list" as const },
+  { label: "Home", icon: Home, to: "/" as const },
+  { label: "Unified Inbox", icon: Inbox, to: "/inbox" as const },
+  { label: "Requests", icon: ClipboardList, to: "/" as const, view: "list" as const },
   {
     label: "Properties",
     icon: Building2,
@@ -193,7 +195,7 @@ export function AppShell({
               {...("view" in n ? { search: { view: n.view } } : {})}
               onClick={() => setMobileNav(false)}
               className={cls}
-              activeOptions={{ exact: n.to === "/", includeSearch: false }}
+              activeOptions={{ exact: n.to === "/", includeSearch: n.to === "/" }}
               activeProps={{ className: "bg-sidebar-accent font-medium text-primary" }}
             >
               {inner}
