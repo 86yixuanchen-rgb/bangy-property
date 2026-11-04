@@ -70,8 +70,29 @@ export function AppShell({
     ? inbox.emails.filter((m) => m.unread && m.inInbox && !m.trashed).length
     : 0;
   const navigate = useNavigate();
+  const searchRef = useRef<HTMLInputElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      const editing =
+        event.target instanceof HTMLElement &&
+        event.target.closest("input, textarea, select, [contenteditable='true']") !== null;
+      if (event.key === "/" && !editing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (event.key === "Escape") {
+        setSearch("");
+        setNotifOpen(false);
+        setProfile(false);
+        setMobileNav(false);
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, []);
 
   useEffect(() => {
     if (ready && !isSignedIn) void navigate({ to: "/login", replace: true });
@@ -148,10 +169,12 @@ export function AppShell({
     <aside className="app-sidebar h-full w-56 shrink-0 border-r bg-sidebar p-3">
       <div className="sidebar-caption">Workspace</div>
       <nav className="space-y-0.5" aria-label="Main navigation">
-        {nav.map((n) => {
+        {nav.map((n, index) => {
           const inner = (
             <>
-              <n.icon className="h-4 w-4" />
+              <span className="nav-index" aria-hidden="true">
+                {String(index + 1).padStart(2, "0")}
+              </span>
               <span className="flex-1">{n.label}</span>
               {n.to === "/inbox" && unreadCount > 0 ? (
                 <span className="rounded bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
@@ -200,10 +223,12 @@ export function AppShell({
         <div className="relative mx-auto flex-1 md:max-w-xl">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
+            ref={searchRef}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search repairs…"
             aria-label="Global search"
+            aria-keyshortcuts="/"
             className="h-9 w-full rounded-md border bg-muted pl-9 pr-8 text-sm outline-none focus:border-ring focus:bg-card"
           />
           {search ? (
@@ -243,6 +268,15 @@ export function AppShell({
           ) : null}
         </div>
         <div className="ml-auto flex items-center gap-1 sm:gap-2">
+          <button
+            onClick={openAI}
+            aria-label="Open AI assistant"
+            aria-expanded={assistantOpen}
+            className="flex items-center gap-2 border px-2 py-2 text-xs font-medium hover:bg-muted"
+          >
+            <MessageSquareText className="h-4 w-4" />
+            <span className="hidden lg:inline">AI assistant</span>
+          </button>
           <div ref={notifRef} className="relative">
             <button
               onClick={() => setNotifOpen((v) => !v)}
@@ -372,15 +406,6 @@ export function AppShell({
           </>
         ) : null}
       </div>
-      {!assistantOpen ? (
-        <button
-          onClick={openAI}
-          className="fixed bottom-5 right-5 z-20 flex items-center gap-2 rounded-full bg-primary px-4 py-3 text-sm font-medium text-primary-foreground shadow-float hover:opacity-95"
-        >
-          <MessageSquareText className="h-4 w-4" />
-          <span className="hidden sm:inline">AI assistant</span>
-        </button>
-      ) : null}
       <div
         className="fixed bottom-4 left-1/2 z-[70] flex -translate-x-1/2 flex-col gap-2"
         aria-live="polite"
@@ -391,7 +416,7 @@ export function AppShell({
             onClick={() => dismissToast(toast.id)}
             className="flex items-center gap-2 rounded-lg bg-foreground px-4 py-3 text-sm text-background shadow-float"
           >
-            <Check className="h-4 w-4 text-done" />
+            <Check className="h-4 w-4 text-background" />
             {toast.message}
           </button>
         ))}

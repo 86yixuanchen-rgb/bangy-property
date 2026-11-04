@@ -304,7 +304,7 @@ function Dashboard() {
             </div>
           )}
           {loaded && requests.length > 0 && (
-            <footer className="repair-list-footer">
+            <footer className="repair-list-footer" aria-live="polite" aria-atomic="true">
               <span>
                 {filtered.length} of {requests.length} requests
               </span>
