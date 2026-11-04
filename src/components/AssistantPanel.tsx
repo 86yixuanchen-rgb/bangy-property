@@ -101,7 +101,7 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
   }, [turns, loading]);
 
   return (
-    <aside className="fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l bg-card shadow-float sm:w-[400px] md:static md:z-auto md:shadow-none">
+    <aside className="fixed bottom-0 right-0 top-14 z-40 flex w-full shrink-0 flex-col border-l bg-card shadow-float sm:w-[360px] 2xl:static 2xl:z-auto 2xl:shadow-none">
       <div className="flex items-center gap-2 border-b px-4 py-3">
         <div className="grid h-7 w-7 place-items-center rounded-md bg-ai-soft text-ai">
           <Bot className="h-4 w-4" />

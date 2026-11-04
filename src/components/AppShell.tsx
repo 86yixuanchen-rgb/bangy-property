@@ -354,8 +354,18 @@ export function AppShell({
             </div>
           </>
         ) : null}
-        <main className="min-w-0 flex-1 overflow-y-auto">{children}</main>
-        {assistantOpen ? <AssistantPanel onClose={() => setAssistantOpen(false)} /> : null}
+        <main className="workspace-main min-w-0 flex-1 overflow-y-auto">{children}</main>
+        {assistantOpen ? (
+          <>
+            <button
+              type="button"
+              aria-label="Close AI panel backdrop"
+              className="fixed inset-x-0 bottom-0 top-14 z-30 bg-black/20 2xl:hidden"
+              onClick={() => setAssistantOpen(false)}
+            />
+            <AssistantPanel onClose={() => setAssistantOpen(false)} />
+          </>
+        ) : null}
       </div>
       {!assistantOpen ? (
         <button

@@ -235,9 +235,9 @@ function InboxPage() {
 
   return (
     <AppShell>
-      <div className="flex h-full min-h-[calc(100vh-3.5rem)] flex-col xl:flex-row">
+      <div className="inbox-layout min-h-[calc(100vh-3.5rem)]">
         <div
-          className={`${selected ? "hidden xl:flex" : "flex"} w-full shrink-0 flex-col border-r bg-card xl:flex xl:w-80`}
+          className={`inbox-list ${selected || composing ? "inbox-list-hidden" : ""} flex-col border-r bg-card`}
         >
           <div className="border-b p-3">
             <h1 className="mb-2 font-semibold">Unified Inbox</h1>
@@ -439,11 +439,11 @@ function InboxPage() {
             </form>
           </div>
         ) : selected ? (
-          <>
-            <div className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8">
+          <section className="inbox-detail" aria-label="Selected email">
+            <div className="inbox-message min-w-0 p-4 sm:p-6">
               <button
                 onClick={() => setSelectedId("")}
-                className="mb-3 flex items-center gap-1 text-sm text-muted-foreground xl:hidden"
+                className="inbox-back mb-3 flex items-center gap-1 text-sm text-muted-foreground"
               >
                 <ArrowLeft className="h-4 w-4" />
                 Back to messages
@@ -453,8 +453,8 @@ function InboxPage() {
                   <Mail className="h-3.5 w-3.5" />
                   Email · {new Date(selected.receivedAt).toLocaleString()}
                 </div>
-                <h2 className="mt-2 text-xl font-semibold">{selected.subject}</h2>
-                <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                <h2 className="mt-2 break-words text-xl font-semibold">{selected.subject}</h2>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
                   <span className="break-all">To: {selected.toEmails}</span>
                   <button
                     disabled={moving}
@@ -470,7 +470,7 @@ function InboxPage() {
                   </button>
                 </div>
                 <div className="mt-3 flex items-center gap-3 border-b pb-4">
-                  <div className="grid h-9 w-9 place-items-center rounded-full bg-muted text-xs font-semibold">
+                  <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">
                     {selected.fromName
                       .split(" ")
                       .map((x) => x[0])
@@ -478,7 +478,7 @@ function InboxPage() {
                       .slice(0, 2)
                       .toUpperCase()}
                   </div>
-                  <div className="text-sm">
+                  <div className="min-w-0 break-words text-sm">
                     <div className="font-medium">{selected.fromName}</div>
                     <div className="text-xs text-muted-foreground">{selected.fromEmail}</div>
                   </div>
@@ -521,7 +521,7 @@ function InboxPage() {
                 )}
               </div>
             </div>
-            <aside className="w-full shrink-0 border-l bg-card p-5 xl:w-96">
+            <aside className="inbox-request min-w-0 border-t bg-card p-5">
               <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Repair request
               </div>
@@ -619,7 +619,7 @@ function InboxPage() {
                 Replies are sent from your Gmail account and appear in the request timeline.
               </p>
             </aside>
-          </>
+          </section>
         ) : (
           <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
             {connected ? "Select an email to read it." : "Connect Gmail to see your emails here."}

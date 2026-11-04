@@ -110,3 +110,52 @@
     -webkit-font-smoothing: antialiased;
   }
 }
+
+/* Respond to the space remaining after navigation and the AI panel, not the viewport. */
+.workspace-main {
+  container: workspace / inline-size;
+}
+.inbox-layout {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.inbox-list {
+  display: flex;
+  min-width: 0;
+}
+.inbox-list-hidden {
+  display: none;
+}
+.inbox-detail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.inbox-request {
+  overflow-wrap: anywhere;
+}
+@container workspace (min-width: 44rem) {
+  .inbox-layout {
+    display: grid;
+    grid-template-columns: clamp(16rem, 27cqw, 20rem) minmax(0, 1fr);
+  }
+  .inbox-list-hidden {
+    display: flex;
+  }
+  .inbox-back {
+    display: none;
+  }
+}
+@container workspace (min-width: 76rem) {
+  .inbox-detail {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 18rem;
+    align-items: start;
+  }
+  .inbox-request {
+    align-self: stretch;
+    border-top: 0;
+    border-left: 1px solid var(--color-border);
+  }
+}
