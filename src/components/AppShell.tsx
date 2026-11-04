@@ -1,7 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  Home,
   Inbox,
   ClipboardList,
   Building2,
@@ -26,9 +25,8 @@ import { useQuery } from "@tanstack/react-query";
 import { getInbox } from "@/lib/gmail.functions";
 
 const nav = [
-  { label: "Home", icon: Home, to: "/" as const },
-  { label: "Unified Inbox", icon: Inbox, to: "/inbox" as const },
-  { label: "Requests", icon: ClipboardList, to: "/" as const, view: "list" as const },
+  { label: "Inbox", icon: Inbox, to: "/inbox" as const },
+  { label: "Repairs", icon: ClipboardList, to: "/" as const, view: "list" as const },
   {
     label: "Properties",
     icon: Building2,
@@ -139,12 +137,16 @@ export function AppShell({
       <div
         className="grid min-h-screen place-items-center bg-background"
         aria-label="Loading workspace"
-      />
+        role="status"
+      >
+        <span className="text-sm text-muted-foreground">Loading workspace…</span>
+      </div>
     );
   }
 
   const sidebar = (
-    <aside className="h-full w-56 shrink-0 border-r bg-sidebar p-3">
+    <aside className="app-sidebar h-full w-56 shrink-0 border-r bg-sidebar p-3">
+      <div className="sidebar-caption">Workspace</div>
       <nav className="space-y-0.5" aria-label="Main navigation">
         {nav.map((n) => {
           const inner = (
@@ -168,7 +170,7 @@ export function AppShell({
               {...("view" in n ? { search: { view: n.view } } : {})}
               onClick={() => setMobileNav(false)}
               className={cls}
-              activeOptions={{ exact: n.to === "/", includeSearch: n.to === "/" }}
+              activeOptions={{ exact: n.to === "/", includeSearch: false }}
               activeProps={{ className: "bg-sidebar-accent font-medium text-primary" }}
             >
               {inner}
@@ -180,8 +182,8 @@ export function AppShell({
   );
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <header className="relative z-30 flex h-14 shrink-0 items-center gap-3 border-b bg-card px-3 sm:px-4">
+    <div className="app-frame flex min-h-screen flex-col">
+      <header className="app-header relative z-30 flex h-14 shrink-0 items-center gap-3 border-b bg-card px-3 sm:px-4">
         <button
           onClick={() => setMobileNav(true)}
           className="rounded-md p-2 hover:bg-muted md:hidden"
@@ -191,18 +193,16 @@ export function AppShell({
         </button>
         <Link to="/" className="flex items-center gap-2 md:w-52">
           <div className="grid h-8 w-8 place-items-center rounded-md bg-primary text-sm font-semibold text-primary-foreground">
-            B
+            R
           </div>
-          <span className="hidden font-semibold tracking-tight sm:inline">
-            Banjg <span className="font-normal text-muted-foreground">Property</span>
-          </span>
+          <span className="hidden font-semibold tracking-tight sm:inline">RepairFlow</span>
         </Link>
         <div className="relative mx-auto flex-1 md:max-w-xl">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search requests, properties or people…"
+            placeholder="Search repairs…"
             aria-label="Global search"
             className="h-9 w-full rounded-md border bg-muted pl-9 pr-8 text-sm outline-none focus:border-ring focus:bg-card"
           />
@@ -288,6 +288,7 @@ export function AppShell({
               onClick={() => setProfile((v) => !v)}
               className="flex items-center gap-2 rounded-md p-1 hover:bg-muted"
               aria-expanded={profile}
+              aria-label="Account menu"
             >
               <div className="grid h-8 w-8 place-items-center rounded-full bg-primary-soft text-xs font-semibold text-primary">
                 {(user?.name ?? "?")
@@ -345,8 +346,12 @@ export function AppShell({
             />
             <div className="fixed inset-y-0 left-0 z-50 bg-sidebar pt-2 shadow-float md:hidden">
               <div className="flex items-center justify-between px-4 pb-2">
-                <span className="font-semibold">Banjg Property</span>
-                <button onClick={() => setMobileNav(false)} className="p-2">
+                <span className="font-semibold">RepairFlow</span>
+                <button
+                  onClick={() => setMobileNav(false)}
+                  className="p-2"
+                  aria-label="Close navigation"
+                >
                   <X className="h-5 w-5" />
                 </button>
               </div>
@@ -373,7 +378,7 @@ export function AppShell({
           className="fixed bottom-5 right-5 z-20 flex items-center gap-2 rounded-full bg-primary px-4 py-3 text-sm font-medium text-primary-foreground shadow-float hover:opacity-95"
         >
           <MessageSquareText className="h-4 w-4" />
-          <span className="hidden sm:inline">Ask Banjg AI</span>
+          <span className="hidden sm:inline">AI assistant</span>
         </button>
       ) : null}
       <div

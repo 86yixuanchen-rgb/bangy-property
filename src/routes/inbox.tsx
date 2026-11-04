@@ -21,7 +21,7 @@ import { linkEmail } from "@/lib/incidents.functions";
 export const Route = createFileRoute("/inbox")({
   head: () => ({
     meta: [
-      { title: "Unified Inbox — Banjg Property" },
+      { title: "Inbox — RepairFlow" },
       {
         name: "description",
         content: "Your Gmail inbox organised around repair requests.",
@@ -54,6 +54,8 @@ function InboxPage() {
   const [requestId, setRequestId] = useState("");
   const [moving, setMoving] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftAddress, setDraftAddress] = useState("");
   const [reconnect, setReconnect] = useState(false);
   const { requests, addRequest, notify } = useWorkspace();
   const queryClient = useQueryClient();
@@ -125,6 +127,8 @@ function InboxPage() {
     : undefined;
 
   const choose = (id: string) => {
+    setDraftTitle(emails.find((m) => m.id === id)?.subject.slice(0, 200) ?? "");
+    setDraftAddress("");
     setComposing(false);
     setSelectedId(id);
     setReadIds((ids) => new Set(ids).add(id));
@@ -240,7 +244,7 @@ function InboxPage() {
           className={`inbox-list ${selected || composing ? "inbox-list-hidden" : ""} flex-col border-r bg-card`}
         >
           <div className="border-b p-3">
-            <h1 className="mb-2 font-semibold">Unified Inbox</h1>
+            <h1 className="mb-2 font-semibold">Inbox</h1>
             {connected ? (
               <>
                 <button
@@ -307,18 +311,33 @@ function InboxPage() {
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
+                aria-label="Search emails"
                 placeholder="Search emails…"
                 className="h-8 w-full rounded-md border bg-muted pl-8 pr-3 text-xs outline-none"
               />
             </div>
           </div>
           <div className="flex-1 overflow-y-auto">
+            {inbox.isPending && (
+              <p role="status" className="p-6 text-sm text-muted-foreground">
+                Loading your inbox…
+              </p>
+            )}
+            {inbox.isError && (
+              <div role="alert" className="p-6 text-sm">
+                <p>Could not load your inbox.</p>
+                <button onClick={() => void inbox.refetch()} className="secondary-action mt-3">
+                  Try again
+                </button>
+              </div>
+            )}
             {list.map((m) => {
               const unread = m.unread && !readIds.has(m.id);
               return (
                 <button
                   key={m.id}
                   onClick={() => choose(m.id)}
+                  aria-pressed={m.id === selected?.id}
                   className={`w-full border-b px-4 py-3 text-left ${m.id === selected?.id ? "border-l-2 border-l-primary bg-primary-soft" : "hover:bg-muted"}`}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -448,10 +467,10 @@ function InboxPage() {
                 <ArrowLeft className="h-4 w-4" />
                 Back to messages
               </button>
-              <div className="rounded-lg border bg-card p-5 shadow-card sm:p-6">
+              <div className="conversation-content bg-card p-5 sm:p-6">
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Mail className="h-3.5 w-3.5" />
-                  Email · {new Date(selected.receivedAt).toLocaleString()}
+                  Original email · {new Date(selected.receivedAt).toLocaleString()}
                 </div>
                 <h2 className="mt-2 break-words text-xl font-semibold">{selected.subject}</h2>
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
@@ -521,7 +540,7 @@ function InboxPage() {
                 )}
               </div>
             </div>
-            <aside className="inbox-request min-w-0 border-t bg-card p-5">
+            <aside className="inbox-request min-w-0 border-t bg-sidebar p-5">
               <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Repair request
               </div>
@@ -560,19 +579,49 @@ function InboxPage() {
                 </div>
               ) : (
                 <div className="mt-3 space-y-4 text-sm">
-                  <p className="text-muted-foreground">
-                    This email is not linked to a request. Choose the right request below when the
-                    conversation or contact matches more than one repair.
-                  </p>
+                  <div className="rounded-md border bg-card p-3">
+                    <div className="mb-2 text-xs font-medium text-primary">
+                      Review before creating
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      The email subject will become the repair title. Confirm the details below. No
+                      email is sent and no spending is authorised.
+                    </p>
+                  </div>
+                  <label className="block text-xs font-medium">
+                    Repair issue
+                    <input
+                      required
+                      maxLength={200}
+                      value={draftTitle}
+                      onChange={(e) => setDraftTitle(e.target.value)}
+                      className="mt-1.5 w-full rounded-md border bg-card px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="block text-xs font-medium">
+                    Property address
+                    <input
+                      required
+                      value={draftAddress}
+                      onChange={(e) => setDraftAddress(e.target.value)}
+                      placeholder="Enter the property address"
+                      className="mt-1.5 w-full rounded-md border bg-card px-3 py-2 text-sm"
+                    />
+                  </label>
+                  {!draftAddress.trim() && (
+                    <p className="text-xs text-attention">
+                      Missing information: confirm the property address before creating a request.
+                    </p>
+                  )}
                   <button
-                    disabled={creating}
+                    disabled={creating || !draftTitle.trim() || !draftAddress.trim()}
                     onClick={async () => {
-                      if (creating) return;
+                      if (creating || !draftTitle.trim() || !draftAddress.trim()) return;
                       setCreating(true);
                       try {
                         const created = await addRequest({
-                          title: selected.subject.slice(0, 200),
-                          address: "Address to be confirmed",
+                          title: draftTitle.trim(),
+                          address: draftAddress.trim(),
                           priority: "Medium",
                         });
                         await linkEmail({ data: { emailId: selected.id, requestId: created.id } });
@@ -584,9 +633,9 @@ function InboxPage() {
                         setCreating(false);
                       }
                     }}
-                    className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-primary-foreground"
+                    className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    Create repair request from this email
+                    {creating ? "Creating request…" : "Confirm & create request"}
                   </button>
                   {requests.some((r) => r.column !== "Completed") ? (
                     <label className="block text-xs text-muted-foreground">

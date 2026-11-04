@@ -107,7 +107,7 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
           <Bot className="h-4 w-4" />
         </div>
         <div className="flex-1">
-          <div className="text-sm font-semibold">Banjg AI</div>
+          <div className="text-sm font-semibold">RepairFlow AI</div>
           <div className="text-[11px] text-muted-foreground">
             Drafts actions — nothing sends without your approval
           </div>
@@ -133,7 +133,7 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
                 className={`flex items-center gap-2 font-medium ${turn.error ? "text-waiting" : "text-ai"}`}
               >
                 {turn.error ? <AlertTriangle className="h-4 w-4" /> : <Check className="h-4 w-4" />}
-                {turn.error ? "AI setup required" : "Banjg AI"}
+                {turn.error ? "AI setup required" : "RepairFlow AI"}
               </div>
               <p className="mt-2 whitespace-pre-wrap text-muted-foreground">
                 {turn.error ?? turn.answer}

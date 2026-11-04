@@ -1,365 +1,329 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import {
-  Activity,
-  Hourglass,
-  AlertCircle,
-  CalendarCheck,
-  Bot,
-  ChevronRight,
+  ArrowRight,
+  Search,
   Plus,
   Filter,
   X,
+  List,
+  Columns3,
+  AlertCircle,
+  Inbox,
 } from "lucide-react";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { AppShell } from "@/components/AppShell";
 import { RequestCard } from "@/components/RequestCard";
 import { columns, priorityTone, type Priority } from "@/lib/data";
 import { useWorkspace } from "@/lib/workspace";
-import { useAuth } from "@/lib/auth";
-import { listAppointments, loadSampleData } from "@/lib/workspace.functions";
+import { loadSampleData } from "@/lib/workspace.functions";
 
 export const Route = createFileRoute("/")({
-  validateSearch: (search: Record<string, unknown>): { view?: "list" } =>
-    search["view"] === "list" ? { view: "list" } : {},
-  head: () => ({
-    meta: [
-      { title: "Home — Banjg Property" },
-      {
-        name: "description",
-        content: "See every repair request, who it's waiting on and what happens next.",
-      },
-    ],
-  }),
+  validateSearch: (search: Record<string, unknown>): { view?: "list" | "board" } =>
+    search["view"] === "board"
+      ? { view: "board" }
+      : search["view"] === "list"
+        ? { view: "list" }
+        : {},
+  head: () => ({ meta: [{ title: "Repairs — RepairFlow" }] }),
   component: Dashboard,
 });
+
 function Dashboard() {
-  const { requests, loaded, addRequest, notify } = useWorkspace();
+  const { requests, loaded, loadError, retryRequests, addRequest, notify } = useWorkspace();
   const queryClient = useQueryClient();
-  const { data: appointments = [] } = useQuery({
-    queryKey: ["appointments"],
-    queryFn: () => listAppointments(),
-  });
-  const { user } = useAuth();
   const navigate = useNavigate();
   const search = Route.useSearch();
-  const [view, setView] = useState<"board" | "list">(search.view === "list" ? "list" : "board");
+  const [view, setView] = useState<"board" | "list">(search.view ?? "list");
   useEffect(() => {
-    setView(search.view === "list" ? "list" : "board");
+    setView(search.view ?? "list");
   }, [search.view]);
+  const [query, setQuery] = useState("");
   const [priority, setPriority] = useState<"All" | Priority>("All");
-  const now = new Date();
-  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  const monthNames = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-  ];
-  const dateStr = `${dayNames[now.getDay()]}, ${now.getDate()} ${monthNames[now.getMonth()]}`;
-  const hour = now.getHours();
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const [stage, setStage] = useState("Active");
   const [newOpen, setNewOpen] = useState(false);
-  const [aiSeed, setAiSeed] = useState(0);
+  const [loadingSample, setLoadingSample] = useState(false);
+  const counts = {
+    Active: requests.filter((r) => r.column !== "Completed").length,
+    "Action Needed": requests.filter((r) => r.column === "Action Needed").length,
+    Waiting: requests.filter((r) => r.column === "Waiting").length,
+    Completed: requests.filter((r) => r.column === "Completed").length,
+    All: requests.length,
+  };
   const filtered = useMemo(
-    () => (priority === "All" ? requests : requests.filter((item) => item.priority === priority)),
-    [requests, priority],
-  );
-  const attentionAll = useMemo(() => {
-    const weight = { Urgent: 0, High: 1, Medium: 2, Low: 3 } as const;
-    return requests
-      .filter(
+    () =>
+      requests.filter(
         (r) =>
-          r.column !== "Completed" &&
-          (r.column === "Action Needed" || r.priority === "Urgent" || r.priority === "High"),
-      )
-      .sort(
-        (a, b) =>
-          Number(b.column === "Action Needed") - Number(a.column === "Action Needed") ||
-          weight[a.priority] - weight[b.priority],
-      );
-  }, [requests]);
-  const briefing = attentionAll.slice(0, 3);
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-  const scheduledToday = appointments.filter(
-    (a) =>
-      a.startsAt >= startOfDay.getTime() && a.startsAt < startOfDay.getTime() + 24 * 3600 * 1000,
-  ).length;
-  const stats = [
-    {
-      label: "Active Requests",
-      value: requests.filter((r) => r.column !== "Completed").length,
-      icon: Activity,
-      tone: "text-primary bg-primary-soft",
-    },
-    {
-      label: "Waiting",
-      value: requests.filter((r) => r.column === "Waiting").length,
-      icon: Hourglass,
-      tone: "text-waiting bg-waiting-soft",
-    },
-    {
-      label: "Need Attention",
-      value: requests.filter((r) => r.column === "Action Needed").length,
-      icon: AlertCircle,
-      tone: "text-attention bg-attention-soft",
-    },
-    {
-      label: "Scheduled Today",
-      value: scheduledToday,
-      icon: CalendarCheck,
-      tone: "text-scheduled bg-scheduled-soft",
-    },
-  ];
+          (priority === "All" || r.priority === priority) &&
+          (stage === "All" ||
+            (stage === "Active" ? r.column !== "Completed" : r.column === stage)) &&
+          [r.id, r.title, r.address, r.waitingOn, r.nextAction].some((value) =>
+            value.toLowerCase().includes(query.trim().toLowerCase()),
+          ),
+      ),
+    [requests, priority, stage, query],
+  );
   return (
-    <AppShell openAssistantSignal={aiSeed}>
-      <div className="space-y-6 p-4 sm:p-6 lg:p-8">
-        <div className="flex flex-wrap items-end justify-between gap-3">
+    <AppShell>
+      <div className="repair-dashboard">
+        <div className="page-heading">
           <div>
-            <p className="text-sm text-muted-foreground">{dateStr}</p>
-            <h1 className="text-2xl font-semibold tracking-tight">
-              {greeting}, {user?.name ?? "there"}
-            </h1>
+            <p className="page-eyebrow">WORKSPACE / REPAIRS</p>
+            <h1>Repair requests</h1>
+            <p className="mt-1 text-sm text-muted-foreground">Every repair, a clear next step.</p>
           </div>
-          <button
-            onClick={() => setNewOpen(true)}
-            className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-          >
-            <Plus className="h-4 w-4" />
-            Create request
+          <button onClick={() => setNewOpen(true)} className="primary-action">
+            <Plus className="h-4 w-4" /> New request
           </button>
         </div>
-        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-          {stats.map((s) => (
-            <div
-              key={s.label}
-              className="flex items-center gap-3 rounded-lg border bg-card p-4 shadow-card sm:p-5"
+        <div className="repair-tabs" role="group" aria-label="Filter repair status">
+          {(["Active", "Action Needed", "Waiting", "Completed", "All"] as const).map((key) => (
+            <button
+              key={key}
+              aria-pressed={stage === key}
+              onClick={() => setStage(key)}
+              className={stage === key ? "selected" : ""}
             >
-              <div className={`grid h-10 w-10 place-items-center rounded-md ${s.tone}`}>
-                <s.icon className="h-5 w-5" />
-              </div>
-              <div>
-                <div className="text-2xl font-semibold">{s.value}</div>
-                <div className="text-xs text-muted-foreground sm:text-sm">{s.label}</div>
-              </div>
-            </div>
+              {key === "Action Needed" ? "Needs attention" : key === "All" ? "All requests" : key}
+              <span>{counts[key]}</span>
+            </button>
           ))}
         </div>
-        {requests.length > 0 ? (
-          <section className="rounded-lg border bg-card p-4 shadow-card sm:p-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="grid h-8 w-8 place-items-center rounded-md bg-ai-soft text-ai">
-                  <Bot className="h-4 w-4" />
-                </div>
-                <div>
-                  <div className="text-xs font-medium uppercase tracking-wide text-ai">
-                    Morning briefing
-                  </div>
-                  <h2 className="font-semibold">
-                    {attentionAll.length === 0
-                      ? "Nothing needs your attention right now"
-                      : `${attentionAll.length} ${attentionAll.length === 1 ? "request needs" : "requests need"} your attention`}
-                  </h2>
-                </div>
-              </div>
-              <button
-                onClick={() => setAiSeed((v) => v + 1)}
-                className="rounded-md border border-ai/30 bg-ai-soft px-3 py-2 text-sm font-medium text-ai hover:opacity-90"
-              >
-                Ask AI to prioritise my day
-              </button>
-            </div>
-            <div className="mt-4 divide-y rounded-md border">
-              {briefing.map((b) => (
-                <Link
-                  key={b.id}
-                  to="/requests/$id"
-                  params={{ id: b.id }}
-                  className="flex items-center gap-3 px-3 py-3 text-sm hover:bg-muted"
-                >
-                  <span className="h-2 w-2 shrink-0 rounded-full bg-attention" />
-                  <span className="font-mono text-xs text-muted-foreground">{b.id}</span>
-                  <span className="hidden w-36 truncate font-medium sm:block">{b.title}</span>
-                  <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                    {b.column === "Action Needed" ? "Action needed" : `${b.priority} priority`} ·{" "}
-                    {b.nextAction}
-                  </span>
-                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-                </Link>
-              ))}
-            </div>
-          </section>
-        ) : null}
-        {loaded && requests.length === 0 ? (
-          <section className="rounded-lg border border-dashed bg-card p-8 text-center shadow-card">
-            <h2 className="text-lg font-semibold">No repair requests yet</h2>
-            <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
-              Create your first request, or connect Gmail in the Inbox and create requests from
-              tenant emails. Want to look around first? Load a few clearly labelled sample requests.
-            </p>
-            <div className="mt-4 flex flex-wrap justify-center gap-2">
-              <button
-                onClick={() => setNewOpen(true)}
-                className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-              >
-                New request
-              </button>
-              <button
-                onClick={() =>
-                  void loadSampleData().then(() => {
-                    notify("Sample requests loaded");
-                    return queryClient.invalidateQueries({ queryKey: ["requests"] });
-                  })
-                }
-                className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
-              >
-                Load sample data
-              </button>
-            </div>
-          </section>
-        ) : null}
-        <section>
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-3">
-              <h2 className="font-semibold">Repair workflow</h2>
-              <div
-                className="flex rounded-md border bg-card p-0.5 text-xs"
-                role="group"
-                aria-label="View"
-              >
-                {(
-                  [
-                    ["board", "Board"],
-                    ["list", "All events"],
-                  ] as const
-                ).map(([key, label]) => (
-                  <button
-                    key={key}
-                    onClick={() => setView(key)}
-                    aria-pressed={view === key}
-                    className={`rounded px-2.5 py-1 ${view === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <label className="flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm">
-              <Filter className="h-4 w-4 text-muted-foreground" />
-              <span className="sr-only sm:not-sr-only">Priority</span>
+        {counts["Action Needed"] > 0 && (
+          <div className="attention-strip">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>
+              <strong>
+                {counts["Action Needed"]}{" "}
+                {counts["Action Needed"] === 1 ? "repair needs" : "repairs need"} your attention.
+              </strong>{" "}
+              Review the next action to keep work moving.
+            </span>
+            <button
+              onClick={() => setStage("Action Needed")}
+              className="ml-auto inline-flex items-center gap-1 font-medium"
+            >
+              Review <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+        <section aria-label="Repair requests" className="repair-workspace">
+          <div className="repair-toolbar">
+            <label className="repair-search">
+              <Search className="h-4 w-4" />
+              <input
+                aria-label="Search repairs"
+                placeholder="Search repairs, properties or people…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+              {query && (
+                <button aria-label="Clear repair search" onClick={() => setQuery("")}>
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </label>
+            <label className="priority-filter">
+              <Filter className="h-3.5 w-3.5" />
+              <span className="sr-only">Priority</span>
               <select
+                aria-label="Filter priority"
                 value={priority}
                 onChange={(e) => setPriority(e.target.value as "All" | Priority)}
-                className="bg-transparent outline-none"
               >
-                <option>All</option>
-                <option>Urgent</option>
-                <option>High</option>
-                <option>Medium</option>
-                <option>Low</option>
+                {["All", "Urgent", "High", "Medium", "Low"].map((p) => (
+                  <option key={p} value={p}>
+                    {p === "All" ? "All priorities" : p}
+                  </option>
+                ))}
               </select>
             </label>
+            <div className="view-switch" role="group" aria-label="View">
+              {(["list", "board"] as const).map((key) => (
+                <button
+                  key={key}
+                  aria-label={`${key === "list" ? "List" : "Board"} view`}
+                  aria-pressed={view === key}
+                  onClick={() => {
+                    setView(key);
+                    void navigate({ to: "/", search: { view: key } });
+                  }}
+                >
+                  {key === "list" ? <List className="h-4 w-4" /> : <Columns3 className="h-4 w-4" />}
+                </button>
+              ))}
+            </div>
           </div>
-          {view === "list" ? (
-            <div className="overflow-x-auto rounded-lg border bg-card shadow-card">
-              <table className="w-full min-w-[720px] text-left text-sm">
-                <thead className="border-b bg-muted/50 text-xs text-muted-foreground">
+          {loadError ? (
+            <div role="alert" className="repair-empty">
+              <AlertCircle className="h-7 w-7 text-attention" />
+              <h2>Could not load repairs</h2>
+              <p>Check your connection and try again.</p>
+              <button onClick={retryRequests} className="secondary-action mt-4">
+                Try again
+              </button>
+            </div>
+          ) : !loaded ? (
+            <div role="status" className="p-12 text-center text-sm text-muted-foreground">
+              Loading repair requests…
+            </div>
+          ) : requests.length === 0 ? (
+            <div className="repair-empty">
+              <Inbox className="h-8 w-8 text-muted-foreground" />
+              <h2>No repair requests yet</h2>
+              <p>Create a request or connect Gmail to bring repair emails into your workspace.</p>
+              <div className="mt-4 flex flex-wrap justify-center gap-2">
+                <button onClick={() => setNewOpen(true)} className="primary-action">
+                  Create first request
+                </button>
+                <button
+                  disabled={loadingSample}
+                  className="secondary-action"
+                  onClick={async () => {
+                    setLoadingSample(true);
+                    try {
+                      await loadSampleData();
+                      await queryClient.invalidateQueries({ queryKey: ["requests"] });
+                      notify("Clearly labelled sample requests loaded");
+                    } catch {
+                      notify("Could not load sample requests. Please try again.");
+                    } finally {
+                      setLoadingSample(false);
+                    }
+                  }}
+                >
+                  {loadingSample ? "Loading…" : "Explore sample data"}
+                </button>
+              </div>
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="repair-empty">
+              <Search className="h-7 w-7 text-muted-foreground" />
+              <h2>No matching repairs</h2>
+              <p>Try a different search or clear your filters.</p>
+              <button
+                className="secondary-action mt-4"
+                onClick={() => {
+                  setQuery("");
+                  setPriority("All");
+                  setStage("All");
+                }}
+              >
+                Clear filters
+              </button>
+            </div>
+          ) : view === "list" ? (
+            <div className="repair-table-scroll">
+              <table className="repair-table">
+                <thead>
                   <tr>
-                    <th className="px-4 py-2 font-medium">Request</th>
-                    <th className="px-4 py-2 font-medium">Priority</th>
-                    <th className="px-4 py-2 font-medium">Stage</th>
-                    <th className="px-4 py-2 font-medium">Waiting on</th>
-                    <th className="px-4 py-2 font-medium">Updated</th>
+                    <th>Repair / property</th>
+                    <th>Status</th>
+                    <th>Next to act</th>
+                    <th>Next action</th>
+                    <th>Last update</th>
+                    <th>
+                      <span className="sr-only">Open request</span>
+                    </th>
                   </tr>
                 </thead>
-                <tbody className="divide-y">
+                <tbody>
                   {filtered.map((r) => (
-                    <tr key={r.id} className="hover:bg-muted/50">
-                      <td className="px-4 py-3">
+                    <tr key={r.id}>
+                      <td>
                         <Link
                           to="/requests/$id"
                           params={{ id: r.id }}
-                          className="block focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                          className="repair-title-link"
                         >
-                          <span className="font-mono text-xs text-muted-foreground">{r.id}</span>
-                          <span className="block font-medium">{r.title}</span>
-                          <span className="block text-xs text-muted-foreground">{r.address}</span>
+                          <span className="repair-reference">
+                            {r.id}
+                            <span className={`priority-label ${priorityTone[r.priority]}`}>
+                              {r.priority}
+                            </span>
+                          </span>
+                          <strong>{r.title}</strong>
+                          <span className="repair-address">{r.address}</span>
                         </Link>
                       </td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`rounded border px-2 py-0.5 text-xs ${priorityTone[r.priority]}`}
-                        >
-                          {r.priority}
+                      <td data-label="Status">
+                        <span className="repair-status">
+                          <span
+                            className={`status-dot ${columns.find((c) => c.name === r.column)?.dot ?? "bg-muted-foreground"}`}
+                          />
+                          {r.column}
                         </span>
+                        <span className="block mt-1 text-xs text-muted-foreground">{r.status}</span>
                       </td>
-                      <td className="px-4 py-3">{r.column}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{r.waitingOn}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{r.lastUpdate}</td>
+                      <td data-label="Next to act">
+                        <span className="actor-avatar">{r.waitingOn.charAt(0)}</span>
+                        <span>{r.waitingOn || "Unassigned"}</span>
+                      </td>
+                      <td data-label="Next action" className="next-action-cell">
+                        {r.nextAction || "Next action to be confirmed"}
+                      </td>
+                      <td data-label="Updated" className="text-xs text-muted-foreground">
+                        {r.lastUpdate}
+                      </td>
+                      <td>
+                        <Link
+                          to="/requests/$id"
+                          params={{ id: r.id }}
+                          aria-label={`Open ${r.id}`}
+                          className="table-open"
+                        >
+                          <ArrowRight className="h-4 w-4" />
+                        </Link>
+                      </td>
                     </tr>
                   ))}
-                  {filtered.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="p-8 text-center text-sm text-muted-foreground">
-                        No matching requests
-                      </td>
-                    </tr>
-                  ) : null}
                 </tbody>
               </table>
             </div>
-          ) : null}
-          <div
-            className={`grid min-w-[900px] grid-cols-5 gap-4 overflow-x-auto pb-3 lg:min-w-0 ${view === "list" ? "hidden" : ""}`}
-          >
-            {columns.map((c) => {
-              const items = filtered.filter((r) => r.column === c.name);
-              return (
-                <div key={c.name} className="min-h-36 rounded-lg bg-muted/70 p-2">
-                  <div className="mb-2 flex items-center gap-2 px-1 py-1">
-                    <span className={`h-2 w-2 rounded-full ${c.dot}`} />
-                    <span className="text-sm font-medium">{c.name}</span>
-                    <span className={`ml-auto rounded px-1.5 text-xs font-medium ${c.tone}`}>
-                      {items.length}
-                    </span>
-                  </div>
-                  <div className="space-y-2">
-                    {items.map((r) => (
-                      <RequestCard key={r.id} r={r} />
-                    ))}
-                    {items.length === 0 ? (
-                      <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-                        No matching requests
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          ) : (
+            <div className="repair-board-scroll">
+              <div className="repair-board">
+                {columns.map((c) => (
+                  <section key={c.name}>
+                    <div className="board-heading">
+                      <span className={`status-dot ${c.dot}`} />
+                      <h3>{c.name}</h3>
+                      <span>{filtered.filter((r) => r.column === c.name).length}</span>
+                    </div>
+                    <div className="space-y-3">
+                      {filtered
+                        .filter((r) => r.column === c.name)
+                        .map((r) => (
+                          <RequestCard key={r.id} r={r} />
+                        ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </div>
+          )}
+          {loaded && requests.length > 0 && (
+            <footer className="repair-list-footer">
+              <span>
+                {filtered.length} of {requests.length} requests
+              </span>
+              <span>Select a repair to review its next action</span>
+            </footer>
+          )}
         </section>
       </div>
-      {newOpen ? (
+      {newOpen && (
         <CreateRequest
           onClose={() => setNewOpen(false)}
           onSubmit={async (input) => {
             const item = await addRequest(input);
             setNewOpen(false);
             notify(`${item.id} created`);
-            navigate({ to: "/requests/$id", params: { id: item.id } });
+            void navigate({ to: "/requests/$id", params: { id: item.id } });
           }}
         />
-      ) : null}
+      )}
     </AppShell>
   );
 }
@@ -377,94 +341,94 @@ function CreateRequest({
   const [address, setAddress] = useState("");
   const [priority, setPriority] = useState<Priority>("Medium");
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4"
-      role="dialog"
-      aria-modal="true"
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !saving) onClose();
+      }}
     >
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          if (saving) return;
-          setSaving(true);
-          setSaveError("");
-          try {
-            await onSubmit({ title, address, priority });
-          } catch {
-            setSaveError("Could not create the request. Please try again.");
-          } finally {
-            setSaving(false);
-          }
-        }}
-        className="w-full max-w-lg rounded-xl border bg-card p-6 shadow-float"
-      >
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold">Create repair request</h2>
-            <p className="text-sm text-muted-foreground">Add a new issue to the triage queue.</p>
+      <DialogContent className="max-h-[90vh] w-[calc(100%-2rem)] overflow-y-auto bg-card p-6">
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (saving) return;
+            setSaving(true);
+            setSaveError("");
+            try {
+              await onSubmit({ title, address, priority });
+            } catch {
+              setSaveError("Could not create the request. Please try again.");
+            } finally {
+              setSaving(false);
+            }
+          }}
+          className="w-full"
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <DialogTitle className="text-lg font-semibold">Create repair request</DialogTitle>
+              <DialogDescription>Add a new issue to the triage queue.</DialogDescription>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded p-1 hover:bg-muted"
-            aria-label="Close"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="mt-5 space-y-4">
-          <label className="block text-sm font-medium">
-            Issue
-            <input
-              required
-              autoFocus
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Leaking bathroom tap"
-              className="mt-1 h-10 w-full rounded-md border px-3 font-normal outline-none focus:border-ring"
-            />
-          </label>
-          <label className="block text-sm font-medium">
-            Property address
-            <input
-              required
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              placeholder="e.g. 12 Hill St, Newtown"
-              className="mt-1 h-10 w-full rounded-md border px-3 font-normal outline-none focus:border-ring"
-            />
-          </label>
-          <label className="block text-sm font-medium">
-            Priority
-            <select
-              value={priority}
-              onChange={(e) => setPriority(e.target.value as Priority)}
-              className="mt-1 h-10 w-full rounded-md border bg-card px-3 font-normal"
+          <div className="mt-5 space-y-4">
+            <label className="block text-sm font-medium">
+              Issue
+              <input
+                required
+                autoFocus
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="e.g. Leaking bathroom tap"
+                className="mt-1 h-10 w-full rounded-md border px-3 font-normal outline-none focus:border-ring"
+              />
+            </label>
+            <label className="block text-sm font-medium">
+              Property address
+              <input
+                required
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                placeholder="e.g. 12 Hill St, Newtown"
+                className="mt-1 h-10 w-full rounded-md border px-3 font-normal outline-none focus:border-ring"
+              />
+            </label>
+            <label className="block text-sm font-medium">
+              Priority
+              <select
+                value={priority}
+                onChange={(e) => setPriority(e.target.value as Priority)}
+                className="mt-1 h-10 w-full rounded-md border bg-card px-3 font-normal"
+              >
+                <option>Urgent</option>
+                <option>High</option>
+                <option>Medium</option>
+                <option>Low</option>
+              </select>
+            </label>
+          </div>
+          {saveError ? (
+            <p role="alert" className="mt-3 text-sm text-destructive">
+              {saveError}
+            </p>
+          ) : null}
+          <div className="mt-6 flex justify-end gap-2">
+            <button
+              type="button"
+              disabled={saving}
+              onClick={onClose}
+              className="rounded-md border px-4 py-2 text-sm"
             >
-              <option>Urgent</option>
-              <option>High</option>
-              <option>Medium</option>
-              <option>Low</option>
-            </select>
-          </label>
-        </div>
-        {saveError ? (
-          <p role="alert" className="mt-3 text-sm text-destructive">
-            {saveError}
-          </p>
-        ) : null}
-        <div className="mt-6 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-md border px-4 py-2 text-sm">
-            Cancel
-          </button>
-          <button
-            disabled={saving}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
-          >
-            Create request
-          </button>
-        </div>
-      </form>
-    </div>
+              Cancel
+            </button>
+            <button
+              disabled={saving}
+              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+            >
+              {saving ? "Creating request…" : "Create request"}
+            </button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
