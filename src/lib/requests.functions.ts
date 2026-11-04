@@ -21,7 +21,7 @@ const requestInput = z.object({
   lastUpdate: z.string().max(100),
 });
 
-const requestPatch = requestInput.omit({ id: true }).partial();
+const requestPatch = requestInput.omit({ id: true, address: true }).partial();
 
 async function requireUserId() {
   const { userId } = await auth();
@@ -34,6 +34,7 @@ type Row = typeof repairRequests.$inferSelect;
 function toRequest(row: Row): RepairRequest {
   return {
     id: row.id,
+    propertyId: row.propertyId,
     title: row.title,
     address: row.address,
     priority: row.priority,
@@ -60,7 +61,11 @@ export const listRequests = createServerFn({ method: "GET" }).handler(async () =
 });
 
 export const createRequest = createServerFn({ method: "POST" })
-  .validator(requestInput.pick({ title: true, address: true, priority: true }))
+  .validator(
+    requestInput
+      .pick({ title: true, priority: true })
+      .extend({ propertyId: z.number().int().positive() }),
+  )
   .handler(async ({ data }) => {
     const userId = await requireUserId();
     const { getDb } = await import("./db.server");
@@ -99,5 +104,17 @@ export const patchRequest = createServerFn({ method: "POST" })
         });
       }
     }
+    return { ok: true as const };
+  });
+
+export const linkProperty = createServerFn({ method: "POST" })
+  .validator(
+    z.object({ requestId: requestInput.shape.id, propertyId: z.number().int().positive() }),
+  )
+  .handler(async ({ data }) => {
+    const userId = await requireUserId();
+    const { getDb } = await import("./db.server");
+    const { linkRequestToProperty } = await import("./request-create.server");
+    await linkRequestToProperty(await getDb(), userId, data.requestId, data.propertyId);
     return { ok: true as const };
   });

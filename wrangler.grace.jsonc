@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "3605assessment",
+  "account_id": "660f934cdfaf6e09ec5741112c494c2b",
+  "main": ".output/server/index.mjs",
+  "compatibility_date": "2026-10-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "no_bundle": true,
+  "rules": [
+    {
+      "type": "ESModule",
+      "globs": ["**/*.mjs", "**/*.js"],
+    },
+  ],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".output/public",
+  },
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true,
+    },
+  },
+  "vars": {
+    "DB_GATEWAY_URL": "https://banjg-d1-gateway.86yixuanchen.workers.dev/query",
+    "AI_GATEWAY_URL": "https://banjg-property.86yixuanchen.workers.dev/_internal/ai",
+  },
+}

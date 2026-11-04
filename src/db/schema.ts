@@ -1,4 +1,4 @@
-import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const repairRequests = sqliteTable(
   "repair_requests",
@@ -7,6 +7,7 @@ export const repairRequests = sqliteTable(
     id: text("id").notNull(),
     title: text("title").notNull(),
     address: text("address").notNull(),
+    propertyId: integer("property_id").references(() => properties.id, { onDelete: "restrict" }),
     priority: text("priority", { enum: ["Urgent", "High", "Medium", "Low"] }).notNull(),
     boardColumn: text("board_column", {
       enum: ["New", "Waiting", "Action Needed", "Scheduled", "Completed"],
@@ -23,10 +24,13 @@ export const repairRequests = sqliteTable(
     aiWaitingOn: text("ai_waiting_on"),
     aiUpdatedAt: integer("ai_updated_at"),
   },
-  (t) => [primaryKey({ columns: [t.userId, t.id] })],
+  (t) => [
+    primaryKey({ columns: [t.userId, t.id] }),
+    index("requests_property_idx").on(t.userId, t.propertyId),
+  ],
 );
 
-export const participantRoles = ["Tenant", "Landlord", "Repair Team"] as const;
+export const participantRoles = ["Property Manager", "Tenant", "Landlord", "Repair Team"] as const;
 
 export const requestParticipants = sqliteTable(
   "request_participants",
@@ -83,6 +87,10 @@ export const properties = sqliteTable("properties", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id").notNull(),
   address: text("address").notNull(),
+  managerName: text("manager_name").notNull().default(""),
+  managerEmail: text("manager_email").notNull().default(""),
+  tenantName: text("tenant_name").notNull().default(""),
+  tenantEmail: text("tenant_email").notNull().default(""),
   ownerName: text("owner_name").notNull().default(""),
   ownerEmail: text("owner_email").notNull().default(""),
   notes: text("notes").notNull().default(""),
@@ -103,6 +111,7 @@ export const appointments = sqliteTable("appointments", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id").notNull(),
   requestId: text("request_id"),
+  propertyId: integer("property_id").references(() => properties.id, { onDelete: "restrict" }),
   title: text("title").notNull(),
   startsAt: integer("starts_at").notNull(),
   location: text("location").notNull().default(""),

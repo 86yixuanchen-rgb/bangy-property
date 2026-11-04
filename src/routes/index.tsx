@@ -1,3 +1,4 @@
+import { CreateRequest } from "@/components/CreateRequest";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -20,8 +21,12 @@ import { useAuth } from "@/lib/auth";
 import { listAppointments, loadSampleData } from "@/lib/workspace.functions";
 
 export const Route = createFileRoute("/")({
-  validateSearch: (search: Record<string, unknown>): { view?: "list" } =>
-    search["view"] === "list" ? { view: "list" } : {},
+  validateSearch: (search: Record<string, unknown>): { view?: "list"; property?: number } => ({
+    ...(search["view"] === "list" ? { view: "list" as const } : {}),
+    ...(Number.isSafeInteger(Number(search["property"])) && Number(search["property"]) > 0
+      ? { property: Number(search["property"]) }
+      : {}),
+  }),
   head: () => ({
     meta: [
       { title: "Home — Banjg Property" },
@@ -67,7 +72,10 @@ function Dashboard() {
   const dateStr = `${dayNames[now.getDay()]}, ${now.getDate()} ${monthNames[now.getMonth()]}`;
   const hour = now.getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  const [newOpen, setNewOpen] = useState(false);
+  const [newOpen, setNewOpen] = useState(Boolean(search.property));
+  useEffect(() => {
+    if (search.property) setNewOpen(true);
+  }, [search.property]);
   const [aiSeed, setAiSeed] = useState(0);
   const filtered = useMemo(
     () => (priority === "All" ? requests : requests.filter((item) => item.priority === priority)),
@@ -351,6 +359,7 @@ function Dashboard() {
       </div>
       {newOpen ? (
         <CreateRequest
+          initialPropertyId={search.property}
           onClose={() => setNewOpen(false)}
           onSubmit={async (input) => {
             const item = await addRequest(input);
@@ -361,110 +370,5 @@ function Dashboard() {
         />
       ) : null}
     </AppShell>
-  );
-}
-
-function CreateRequest({
-  onClose,
-  onSubmit,
-}: {
-  onClose: () => void;
-  onSubmit: (input: { title: string; address: string; priority: Priority }) => Promise<void>;
-}) {
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState("");
-  const [title, setTitle] = useState("");
-  const [address, setAddress] = useState("");
-  const [priority, setPriority] = useState<Priority>("Medium");
-  return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4"
-      role="dialog"
-      aria-modal="true"
-    >
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          if (saving) return;
-          setSaving(true);
-          setSaveError("");
-          try {
-            await onSubmit({ title, address, priority });
-          } catch {
-            setSaveError("Could not create the request. Please try again.");
-          } finally {
-            setSaving(false);
-          }
-        }}
-        className="w-full max-w-lg rounded-xl border bg-card p-6 shadow-float"
-      >
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold">Create repair request</h2>
-            <p className="text-sm text-muted-foreground">Add a new issue to the triage queue.</p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded p-1 hover:bg-muted"
-            aria-label="Close"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="mt-5 space-y-4">
-          <label className="block text-sm font-medium">
-            Issue
-            <input
-              required
-              autoFocus
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Leaking bathroom tap"
-              className="mt-1 h-10 w-full rounded-md border px-3 font-normal outline-none focus:border-ring"
-            />
-          </label>
-          <label className="block text-sm font-medium">
-            Property address
-            <input
-              required
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              placeholder="e.g. 12 Hill St, Newtown"
-              className="mt-1 h-10 w-full rounded-md border px-3 font-normal outline-none focus:border-ring"
-            />
-          </label>
-          <label className="block text-sm font-medium">
-            Priority
-            <select
-              value={priority}
-              onChange={(e) => setPriority(e.target.value as Priority)}
-              className="mt-1 h-10 w-full rounded-md border bg-card px-3 font-normal"
-            >
-              <option>Urgent</option>
-              <option>High</option>
-              <option>Medium</option>
-              <option>Low</option>
-            </select>
-          </label>
-        </div>
-        {saveError ? (
-          <p role="alert" className="mt-3 text-sm text-destructive">
-            {saveError}
-          </p>
-        ) : null}
-        <div className="mt-6 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-md border px-4 py-2 text-sm">
-            Cancel
-          </button>
-          <button
-            disabled={saving}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
-          >
-            Create request
-          </button>
-        </div>
-      </form>
-    </div>
   );
 }

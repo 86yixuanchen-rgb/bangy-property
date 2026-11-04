@@ -47,6 +47,14 @@ function isH3SwallowedErrorBody(body: string): boolean {
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      if (new URL(request.url).pathname === "/_internal/status") {
+        const { handleBridgeStatus } = await import("./lib/bridge-status.server");
+        return await handleBridgeStatus(request);
+      }
+      if (new URL(request.url).pathname === "/_internal/ai") {
+        const { handleAiGateway } = await import("./lib/ai-gateway.server");
+        return await handleAiGateway(request);
+      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

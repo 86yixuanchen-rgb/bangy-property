@@ -2,6 +2,7 @@ export type Column = "New" | "Waiting" | "Action Needed" | "Scheduled" | "Comple
 export type Priority = "Urgent" | "High" | "Medium" | "Low";
 
 export interface RepairRequest {
+  propertyId?: number | null;
   id: string;
   title: string;
   address: string;

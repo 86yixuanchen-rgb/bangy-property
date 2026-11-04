@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { drizzle } from "drizzle-orm/d1";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -352,9 +352,17 @@ describe("Reliable operations", () => {
   it("reserves distinct request numbers concurrently above existing records", async () => {
     const { createRequestRecord } = await import("@/lib/request-create.server");
     await request("numbers", "REQ-250");
+    const [property] = await db
+      .insert(schema.properties)
+      .values({ userId: "numbers", address: "Test" })
+      .returning();
     const created = await Promise.all(
       Array.from({ length: 8 }, () =>
-        createRequestRecord(db, "numbers", { title: "New", address: "Test", priority: "High" }),
+        createRequestRecord(db, "numbers", {
+          title: "New",
+          propertyId: property!.id,
+          priority: "High",
+        }),
       ),
     );
     expect(new Set(created.map((r) => r.id)).size).toBe(8);
@@ -671,5 +679,126 @@ describe("Demo account", () => {
       "Email not found",
     );
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("Cross-account database gateway", () => {
+  const secret = "gateway-test-key-with-at-least-32-random-bytes";
+  const url = "https://gateway.test/query";
+  async function setup() {
+    const { createRemoteDb } = await import("@/lib/remote-db.server");
+    const { handleGateway } = await import("../../workers/d1-gateway");
+    const transport = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+      handleGateway(new Request(input, init), { DB: db.$client, DB_GATEWAY_KEY: secret }),
+    );
+    return { remote: createRemoteDb(url, secret, transport), transport, handleGateway };
+  }
+  it("reads and writes the same D1 while preserving field ordering and user isolation", async () => {
+    const { remote } = await setup();
+    const { createRequestRecord } = await import("@/lib/request-create.server");
+    const [property] = await remote
+      .insert(schema.properties)
+      .values({ userId: "gateway-user", address: "Test address" })
+      .returning();
+    const created = await createRequestRecord(remote, "gateway-user", {
+      title: "Remote repair",
+      propertyId: property!.id,
+      priority: "High",
+    });
+    const remoteRows = await remote
+      .select()
+      .from(schema.repairRequests)
+      .where(eq(schema.repairRequests.userId, "gateway-user"));
+    const localRows = await db
+      .select()
+      .from(schema.repairRequests)
+      .where(eq(schema.repairRequests.userId, "gateway-user"));
+    expect(remoteRows).toEqual(localRows);
+    expect(remoteRows[0]?.title).toBe("Remote repair");
+    expect(remoteRows[0]?.id).toBe(created.id);
+    const other = await remote
+      .select()
+      .from(schema.repairRequests)
+      .where(eq(schema.repairRequests.userId, "unrelated-user"));
+    expect(other).toEqual([]);
+    const raw = await remote.all(
+      sql`SELECT id FROM repair_requests WHERE user_id = ${"gateway-user"}`,
+    );
+    expect(raw).toHaveLength(1);
+  });
+  it("keeps a batch atomic if a later statement fails", async () => {
+    const { remote } = await setup();
+    await expect(
+      remote.batch([
+        remote
+          .insert(schema.properties)
+          .values({ userId: "rollback-remote", address: "Must roll back" }),
+        remote.run(sql`INSERT INTO nonexistent_table VALUES (1)`),
+      ]),
+    ).rejects.toThrow();
+    const rows = await db
+      .select()
+      .from(schema.properties)
+      .where(eq(schema.properties.userId, "rollback-remote"));
+    expect(rows).toEqual([]);
+  });
+  it("rejects unsigned, expired, tampered and schema-changing requests", async () => {
+    const { handleGateway } = await setup();
+    const { signGatewayRequest } = await import("@/lib/db-gateway-protocol");
+    const env = { DB: db.$client, DB_GATEWAY_KEY: secret };
+    const body = JSON.stringify({
+      queries: [{ sql: "SELECT 1", params: [], method: "all" }],
+      batch: false,
+    });
+    expect((await handleGateway(new Request(url, { method: "POST", body }), env)).status).toBe(401);
+    for (const [timestamp, content, expected] of [
+      [String(Date.now() - 120_000), body, 401],
+      [String(Date.now()), body + " ", 401],
+      [
+        String(Date.now()),
+        JSON.stringify({
+          queries: [{ sql: "DROP TABLE properties", params: [], method: "run" }],
+          batch: false,
+        }),
+        400,
+      ],
+    ] as const) {
+      const nonce = crypto.randomUUID();
+      const signedBody = content.endsWith(" ") ? body : content;
+      const signature = await signGatewayRequest(secret, timestamp, nonce, signedBody);
+      const response = await handleGateway(
+        new Request(url, {
+          method: "POST",
+          body: content,
+          headers: {
+            "x-banjg-time": timestamp,
+            "x-banjg-nonce": nonce,
+            "x-banjg-signature": signature,
+          },
+        }),
+        env,
+      );
+      expect(response.status).toBe(expected);
+    }
+  });
+  it("rejects redirects without forwarding signed database requests", async () => {
+    const { createRemoteDb } = await import("@/lib/remote-db.server");
+    const transport = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.redirect).toBe("manual");
+      return new Response(null, { status: 302, headers: { Location: "https://other.test" } });
+    });
+    const remote = createRemoteDb(url, secret, transport);
+    await expect(remote.select().from(schema.properties)).rejects.toThrow();
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry an uncertain write after a transport failure", async () => {
+    const { createRemoteDb } = await import("@/lib/remote-db.server");
+    const transport = vi.fn().mockRejectedValue(new Error("Connection lost"));
+    const remote = createRemoteDb(url, secret, transport);
+    await expect(
+      remote.insert(schema.properties).values({ userId: "no-retry", address: "Test" }),
+    ).rejects.toThrow();
+    expect(transport).toHaveBeenCalledTimes(1);
   });
 });

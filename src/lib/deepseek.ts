@@ -49,8 +49,8 @@ function parseAssistantResponse(content: string) {
 export const askDeepSeek = createServerFn({ method: "POST" })
   .validator(z.object({ question: z.string().trim().min(1).max(2000) }))
   .handler(async ({ data }) => {
-    const apiKey = process.env["DEEPSEEK_API_KEY"];
-    if (!apiKey) {
+    const { aiConfigured, fetchDeepSeek } = await import("./ai-gateway.server");
+    if (!aiConfigured()) {
       return {
         ok: false as const,
         code: "NOT_CONFIGURED" as const,
@@ -106,6 +106,7 @@ export const askDeepSeek = createServerFn({ method: "POST" })
       id: request.id,
       title: request.title,
       address: request.address,
+      propertyId: request.propertyId,
       status: request.status,
       priority: request.priority,
       column: request.boardColumn,
@@ -127,23 +128,17 @@ export const askDeepSeek = createServerFn({ method: "POST" })
         })),
     }));
 
-    const response = await fetch(
-      process.env["DEEPSEEK_API_URL"] ?? "https://api.deepseek.com/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          temperature: 0.2,
-          max_tokens: 1200,
-          response_format: { type: "json_object" },
-          messages: [
-            {
-              role: "system",
-              content: `You are Banjg AI, an assistant for Australian property managers.
+    const response = await fetchDeepSeek({
+      method: "POST",
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        temperature: 0.2,
+        max_tokens: 1200,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content: `You are Banjg AI, an assistant for Australian property managers.
 Use only the supplied workspace data. Return one JSON object and no markdown.
 
 For an ordinary question return:
@@ -159,19 +154,18 @@ Email rules:
 - Never claim an email has been sent. The user must confirm it in the interface.
 - If the request or recipient is ambiguous, return type "message" and ask one specific clarifying question.
 - If mailboxConnected is false, explain that Gmail must be connected before sending instead of returning an email draft.`,
-            },
-            {
-              role: "user",
-              content: JSON.stringify({
-                question: data.question,
-                mailboxConnected: mailbox.length > 0,
-                requests: workspace,
-              }),
-            },
-          ],
-        }),
-      },
-    );
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              question: data.question,
+              mailboxConnected: mailbox.length > 0,
+              requests: workspace,
+            }),
+          },
+        ],
+      }),
+    });
 
     if (!response.ok) {
       const requestId = response.headers.get("x-request-id");

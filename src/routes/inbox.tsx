@@ -1,3 +1,4 @@
+import { PropertySelect } from "@/components/PropertySelect";
 import { sendEmail } from "@/lib/send-email";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -54,6 +55,7 @@ function InboxPage() {
   const [requestId, setRequestId] = useState("");
   const [moving, setMoving] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [newPropertyId, setNewPropertyId] = useState("");
   const [reconnect, setReconnect] = useState(false);
   const { requests, addRequest, notify } = useWorkspace();
   const queryClient = useQueryClient();
@@ -564,15 +566,16 @@ function InboxPage() {
                     This email is not linked to a request. Choose the right request below when the
                     conversation or contact matches more than one repair.
                   </p>
+                  <PropertySelect value={newPropertyId} onChange={setNewPropertyId} />
                   <button
-                    disabled={creating}
+                    disabled={creating || !newPropertyId}
                     onClick={async () => {
                       if (creating) return;
                       setCreating(true);
                       try {
                         const created = await addRequest({
                           title: selected.subject.slice(0, 200),
-                          address: "Address to be confirmed",
+                          propertyId: Number(newPropertyId),
                           priority: "Medium",
                         });
                         await linkEmail({ data: { emailId: selected.id, requestId: created.id } });

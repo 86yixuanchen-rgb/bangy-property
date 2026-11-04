@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "banjg-d1-gateway",
+  "account_id": "8152ca872be72ea7c2ef47cde2e8b13f",
+  "main": "workers/d1-gateway.ts",
+  "compatibility_date": "2026-10-08",
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "banjg-property-db",
+      "database_id": "6517c9ef-deb9-4d5a-8a58-455235489aae",
+      "migrations_dir": "drizzle",
+    },
+  ],
+  "observability": { "enabled": true, "traces": { "enabled": true } },
+}

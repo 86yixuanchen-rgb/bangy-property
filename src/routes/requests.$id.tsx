@@ -19,6 +19,8 @@ import {
   Flag,
   CalendarDays,
 } from "lucide-react";
+import { PropertySelect } from "@/components/PropertySelect";
+import { linkProperty } from "@/lib/requests.functions";
 import { AppShell } from "@/components/AppShell";
 import { columns, priorityTone, type Column } from "@/lib/data";
 import { columnStatus, useWorkspace } from "@/lib/workspace";
@@ -117,6 +119,9 @@ function Detail() {
   const { requests, updateRequest, notify } = useWorkspace();
   const { user } = useAuth();
   const queryClient = useQueryClient();
+  const [selectedProperty, setSelectedProperty] = useState("");
+  const [linkingProperty, setLinkingProperty] = useState(false);
+  const [propertyError, setPropertyError] = useState("");
   const [reminderOpen, setReminderOpen] = useState(false);
   const [reminder, setReminder] = useState({ to: "", subject: "", body: "" });
   const [sending, setSending] = useState(false);
@@ -403,6 +408,66 @@ function Detail() {
           </div>
         </div>
 
+        <section className="mb-6 rounded-lg border bg-card p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="font-medium">Property</h2>
+            <Link
+              to="/workspace/$section"
+              params={{ section: "properties" }}
+              className="text-sm text-primary underline"
+            >
+              View properties and people
+            </Link>
+          </div>
+          {r.propertyId ? (
+            <p className="mt-2 text-sm text-muted-foreground">
+              {r.address} · All emails, quotes, appointments and notes on this event belong to this
+              property.
+            </p>
+          ) : (
+            <>
+              <p className="mt-2 text-sm text-muted-foreground">
+                This existing event needs a property. Select it to bring in the current property
+                contacts.
+              </p>
+              <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
+                <div className="min-w-0 flex-1">
+                  <PropertySelect value={selectedProperty} onChange={setSelectedProperty} />
+                </div>
+                <button
+                  disabled={!selectedProperty || linkingProperty}
+                  onClick={async () => {
+                    setLinkingProperty(true);
+                    setPropertyError("");
+                    try {
+                      await linkProperty({
+                        data: { requestId: id, propertyId: Number(selectedProperty) },
+                      });
+                      await queryClient.invalidateQueries({ queryKey: ["requests"] });
+                      await refresh();
+                      notify("Event linked to property and contacts added");
+                    } catch {
+                      setPropertyError(
+                        "Could not link this property. Please refresh and try again.",
+                      );
+                    } finally {
+                      setLinkingProperty(false);
+                    }
+                  }}
+                  className="rounded-md bg-primary px-4 py-2.5 text-sm text-primary-foreground disabled:opacity-50"
+                >
+                  {linkingProperty ? "Linking…" : "Link property"}
+                </button>
+              </div>
+              {propertyError ? (
+                <p role="alert" className="mt-2 text-sm text-destructive">
+                  {propertyError}
+                </p>
+              ) : null}
+            </>
+          )}
+        </section>
+
         <div className="grid gap-6 lg:grid-cols-3">
           <div className="space-y-6 lg:col-span-2">
             <div className="rounded-lg border-2 border-ai/30 bg-ai-soft p-5">
@@ -484,6 +549,8 @@ function Detail() {
                   Quotes
                 </h2>
                 <button
+                  disabled={!r.propertyId}
+                  title={!r.propertyId ? "Link a property first" : undefined}
                   onClick={() => setQuoteOpen((v) => !v)}
                   className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
                 >
@@ -580,6 +647,8 @@ function Detail() {
                   Appointments
                 </h2>
                 <button
+                  disabled={!r.propertyId}
+                  title={!r.propertyId ? "Link a property first" : undefined}
                   onClick={() => setApptOpen((v) => !v)}
                   className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
                 >

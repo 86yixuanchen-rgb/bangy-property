@@ -11,7 +11,7 @@ type WorkspaceValue = {
   loaded: boolean;
   addRequest: (input: {
     title: string;
-    address: string;
+    propertyId: number;
     priority: Priority;
   }) => Promise<RepairRequest>;
   updateRequest: (id: string, patch: Partial<RepairRequest>) => void;

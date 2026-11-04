@@ -38,27 +38,79 @@ export const listProperties = createServerFn({ method: "GET" }).handler(async ()
     .orderBy(asc(properties.address));
 });
 
+const emailOrEmpty = z.union([z.string().trim().toLowerCase().email().max(200), z.literal("")]);
+const propertyInput = z.object({
+  address: z.string().trim().min(1).max(300),
+  managerName: z.string().trim().max(100),
+  managerEmail: emailOrEmpty,
+  ownerName: z.string().trim().max(100),
+  ownerEmail: emailOrEmpty,
+  tenantName: z.string().trim().max(100),
+  tenantEmail: emailOrEmpty,
+  notes: z.string().trim().max(1000),
+});
+function validatePropertyPeople(data: z.infer<typeof propertyInput>) {
+  for (const [name, email] of [
+    [data.managerName, data.managerEmail],
+    [data.ownerName, data.ownerEmail],
+    [data.tenantName, data.tenantEmail],
+  ]) {
+    if (Boolean(name) !== Boolean(email))
+      throw new Error("Provide both a name and email for each person");
+  }
+}
 export const addProperty = createServerFn({ method: "POST" })
-  .validator(
-    z.object({
-      address: z.string().trim().min(1).max(300),
-      ownerName: z.string().trim().max(100),
-      ownerEmail: z.string().trim().toLowerCase().max(200),
-      notes: z.string().trim().max(1000),
-    }),
-  )
+  .validator(propertyInput)
   .handler(async ({ data }) => {
     const userId = await requireUserId();
     const db = await database();
-    await db.insert(properties).values({ userId, ...data });
-    return { ok: true as const };
+    const [property] = await db
+      .insert(properties)
+      .values({ userId, ...data })
+      .returning();
+    return property!;
   });
-
-export const deleteProperty = createServerFn({ method: "POST" })
-  .validator(z.object({ id: z.number().int() }))
+export const updateProperty = createServerFn({ method: "POST" })
+  .validator(propertyInput.extend({ id: z.number().int().positive() }))
   .handler(async ({ data }) => {
     const userId = await requireUserId();
     const db = await database();
+    validatePropertyPeople(data);
+    const { id, ...fields } = data;
+    // Keep the property and displayed addresses on its events in one transaction.
+    const [changed] = await db.batch([
+      db
+        .update(properties)
+        .set(fields)
+        .where(and(eq(properties.userId, userId), eq(properties.id, id)))
+        .returning(),
+      db
+        .update(repairRequests)
+        .set({ address: fields.address })
+        .where(and(eq(repairRequests.userId, userId), eq(repairRequests.propertyId, id))),
+    ]);
+    const property = changed[0];
+    if (!property) throw new Error("Property not found");
+    // Existing event participants are historical snapshots and are not overwritten.
+    return property;
+  });
+export const deleteProperty = createServerFn({ method: "POST" })
+  .validator(z.object({ id: z.number().int().positive() }))
+  .handler(async ({ data }) => {
+    const userId = await requireUserId();
+    const db = await database();
+    const linked = await db
+      .select({ id: repairRequests.id })
+      .from(repairRequests)
+      .where(and(eq(repairRequests.userId, userId), eq(repairRequests.propertyId, data.id)))
+      .limit(1);
+    const booked = await db
+      .select({ id: appointments.id })
+      .from(appointments)
+      .where(and(eq(appointments.userId, userId), eq(appointments.propertyId, data.id)))
+      .limit(1);
+    if (linked.length || booked.length)
+      throw new Error("Properties with event history cannot be removed");
     await db
       .delete(properties)
       .where(and(eq(properties.userId, userId), eq(properties.id, data.id)));
@@ -83,22 +135,44 @@ export const addAppointment = createServerFn({ method: "POST" })
       startsAt: z.number().int(),
       location: z.string().trim().max(300),
       requestId: requestId.nullable(),
+      propertyId: z.number().int().positive().optional(),
     }),
   )
   .handler(async ({ data }) => {
     const userId = await requireUserId();
     const db = await database();
-    await db.insert(appointments).values({ userId, ...data });
-    if (data.requestId) {
-      await db.insert(requestEvents).values({
-        userId,
-        requestId: data.requestId,
-        at: Date.now(),
-        kind: "appointment",
-        text: `Appointment booked: ${data.title} on ${new Date(data.startsAt).toLocaleString("en-AU")}`,
-        actor: "Property Manager",
-      });
-    }
+    const [event] = data.requestId
+      ? await db
+          .select()
+          .from(repairRequests)
+          .where(and(eq(repairRequests.userId, userId), eq(repairRequests.id, data.requestId)))
+      : [];
+    if (data.requestId && !event) throw new Error("Event not found");
+    if (event && !event.propertyId) throw new Error("Link the event to a property before booking");
+    const propertyId = event?.propertyId ?? data.propertyId;
+    if (!propertyId) throw new Error("Choose a property before booking an appointment");
+    if (data.propertyId && event?.propertyId && data.propertyId !== event.propertyId)
+      throw new Error("Property does not match this event");
+    const [property] = await db
+      .select()
+      .from(properties)
+      .where(and(eq(properties.userId, userId), eq(properties.id, propertyId)));
+    if (!property) throw new Error("Property not found");
+    await db.batch([
+      db.insert(appointments).values({ userId, ...data, propertyId }),
+      ...(data.requestId
+        ? [
+            db.insert(requestEvents).values({
+              userId,
+              requestId: data.requestId,
+              at: Date.now(),
+              kind: "appointment",
+              text: `Appointment booked: ${data.title} on ${new Date(data.startsAt).toLocaleString("en-AU")}`,
+              actor: "Property Manager",
+            }),
+          ]
+        : []),
+    ]);
     return { ok: true as const };
   });
 
@@ -126,6 +200,11 @@ export const addQuote = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const userId = await requireUserId();
     const db = await database();
+    const [event] = await db
+      .select()
+      .from(repairRequests)
+      .where(and(eq(repairRequests.userId, userId), eq(repairRequests.id, data.requestId)));
+    if (!event?.propertyId) throw new Error("Link the event to a property before adding a quote");
     const amountCents = Math.round(data.amount * 100);
     await db.insert(requestQuotes).values({
       userId,
@@ -180,6 +259,9 @@ export const listContacts = createServerFn({ method: "GET" }).handler(async () =
     .select()
     .from(requestParticipants)
     .where(eq(requestParticipants.userId, userId));
+  const propertyRows = await db.select().from(properties).where(eq(properties.userId, userId));
+  const { propertyPeople } = await import("./request-create.server");
+  const propertyContacts = propertyRows.flatMap((p) => propertyPeople(p));
   const mail = await db
     .select({ from: emailMessages.fromEmail, to: emailMessages.toEmails })
     .from(emailMessages)
@@ -199,6 +281,18 @@ export const listContacts = createServerFn({ method: "GET" }).handler(async () =
     };
     entry.roles.add(p.role);
     entry.requests.add(p.requestId);
+    byEmail.set(key, entry);
+  }
+  for (const p of propertyContacts) {
+    const key = p.email.toLowerCase();
+    const entry = byEmail.get(key) ?? {
+      name: p.name,
+      email: key,
+      roles: new Set<string>(),
+      requests: new Set<string>(),
+      emails: 0,
+    };
+    entry.roles.add(p.role);
     byEmail.set(key, entry);
   }
   for (const m of mail) {
@@ -229,7 +323,10 @@ export const getSettings = createServerFn({ method: "GET" }).handler(async () =>
     googleConfigured: Boolean(
       process.env["GOOGLE_CLIENT_ID"] && process.env["GOOGLE_CLIENT_SECRET"],
     ),
-    aiConfigured: Boolean(process.env["DEEPSEEK_API_KEY"]),
+    aiConfigured: Boolean(
+      process.env["DEEPSEEK_API_KEY"] ||
+      (process.env["AI_GATEWAY_URL"] && process.env["DB_GATEWAY_KEY"]),
+    ),
   };
 });
 

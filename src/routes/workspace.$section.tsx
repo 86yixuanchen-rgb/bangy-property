@@ -1,7 +1,9 @@
+import { PropertiesSection } from "@/components/PropertiesSection";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Building2, CalendarDays, Mail, Plus, Search, Trash2, Users } from "lucide-react";
+import { PropertySelect } from "@/components/PropertySelect";
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/lib/auth";
 import { useWorkspace } from "@/lib/workspace";
@@ -9,14 +11,11 @@ import { columns } from "@/lib/data";
 import { disconnectGmail } from "@/lib/gmail.functions";
 import {
   addAppointment,
-  addProperty,
   deleteAppointment,
-  deleteProperty,
   getAnalytics,
   getSettings,
   listAppointments,
   listContacts,
-  listProperties,
 } from "@/lib/workspace.functions";
 
 export const Route = createFileRoute("/workspace/$section")({
@@ -29,8 +28,8 @@ function title(value: string) {
 }
 
 const subtitles: Record<string, string> = {
-  properties: "The properties you manage and the requests raised against them.",
-  contacts: "Everyone you have added to a repair request, with their emails.",
+  properties: "Your properties, their PMs, landlords and tenants, and all related events.",
+  contacts: "People linked to your properties and events, with their roles and emails.",
   calendar: "Appointments for repairs, inspections and access.",
   analytics: "Live numbers from your requests, emails and quotes.",
   settings: "Your account and connected services.",
@@ -86,162 +85,6 @@ function SearchBox({
         className="h-10 w-full rounded-md border bg-card pl-9 pr-3 text-sm outline-none"
       />
     </div>
-  );
-}
-
-function PropertiesSection() {
-  const { requests, notify } = useWorkspace();
-  const queryClient = useQueryClient();
-  const { data = [], isLoading } = useQuery({
-    queryKey: ["properties"],
-    queryFn: () => listProperties(),
-  });
-  const [query, setQuery] = useState("");
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ address: "", ownerName: "", ownerEmail: "", notes: "" });
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ["properties"] });
-
-  const rows = useMemo(
-    () =>
-      data
-        .filter((p) =>
-          `${p.address} ${p.ownerName} ${p.ownerEmail}`.toLowerCase().includes(query.toLowerCase()),
-        )
-        .map((p) => ({
-          ...p,
-          requests: requests.filter((r) =>
-            r.address.toLowerCase().includes(p.address.toLowerCase()),
-          ),
-        })),
-    [data, query, requests],
-  );
-
-  return (
-    <>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <SearchBox value={query} onChange={setQuery} placeholder="Search properties…" />
-        <button
-          onClick={() => setOpen((v) => !v)}
-          className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-        >
-          <Plus className="h-4 w-4" />
-          Add property
-        </button>
-      </div>
-      {open ? (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void addProperty({ data: form }).then(() => {
-              setForm({ address: "", ownerName: "", ownerEmail: "", notes: "" });
-              setOpen(false);
-              notify("Property added");
-              return refresh();
-            });
-          }}
-          className="grid gap-3 rounded-lg border bg-card p-4 shadow-card sm:grid-cols-2"
-        >
-          <input
-            required
-            value={form.address}
-            onChange={(e) => setForm({ ...form, address: e.target.value })}
-            placeholder="Address"
-            aria-label="Address"
-            className={`${inputClass} sm:col-span-2`}
-          />
-          <input
-            value={form.ownerName}
-            onChange={(e) => setForm({ ...form, ownerName: e.target.value })}
-            placeholder="Owner / landlord name"
-            aria-label="Owner name"
-            className={inputClass}
-          />
-          <input
-            type="email"
-            value={form.ownerEmail}
-            onChange={(e) => setForm({ ...form, ownerEmail: e.target.value })}
-            placeholder="Owner email"
-            aria-label="Owner email"
-            className={inputClass}
-          />
-          <input
-            value={form.notes}
-            onChange={(e) => setForm({ ...form, notes: e.target.value })}
-            placeholder="Notes (access codes, tenant details…)"
-            aria-label="Notes"
-            className={`${inputClass} sm:col-span-2`}
-          />
-          <button className="rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground sm:col-span-2">
-            Save property
-          </button>
-        </form>
-      ) : null}
-      <div className="overflow-hidden rounded-lg border bg-card shadow-card">
-        {isLoading ? <p className="p-6 text-sm text-muted-foreground">Loading…</p> : null}
-        {!isLoading && rows.length === 0 ? (
-          <p className="p-8 text-center text-sm text-muted-foreground">
-            {data.length === 0
-              ? "No properties yet. Add the first one to track its requests."
-              : "No properties match your search."}
-          </p>
-        ) : null}
-        {rows.map((p) => {
-          const active = p.requests.filter((r) => r.column !== "Completed");
-          return (
-            <div
-              key={p.id}
-              className="grid gap-2 border-b p-4 last:border-0 sm:grid-cols-[1.5fr_1fr_1fr_auto] sm:items-center"
-            >
-              <div className="flex items-center gap-3 font-medium">
-                <Building2 className="h-4 w-4 shrink-0 text-primary" />
-                <span>
-                  {p.address}
-                  {p.notes ? (
-                    <span className="block text-xs font-normal text-muted-foreground">
-                      {p.notes}
-                    </span>
-                  ) : null}
-                </span>
-              </div>
-              <div className="text-sm text-muted-foreground">
-                {p.ownerName || "No owner recorded"}
-                {p.ownerEmail ? <span className="block text-xs">{p.ownerEmail}</span> : null}
-              </div>
-              <div className="text-sm text-muted-foreground">
-                {active.length === 0 ? (
-                  "No active requests"
-                ) : (
-                  <span className="space-x-1">
-                    {active.map((r) => (
-                      <Link
-                        key={r.id}
-                        to="/requests/$id"
-                        params={{ id: r.id }}
-                        className="font-mono text-xs text-primary hover:underline"
-                      >
-                        {r.id}
-                      </Link>
-                    ))}
-                  </span>
-                )}
-              </div>
-              <button
-                onClick={() =>
-                  void deleteProperty({ data: { id: p.id } }).then(() => {
-                    notify("Property removed");
-                    return refresh();
-                  })
-                }
-                className="justify-self-end rounded p-1.5 text-muted-foreground hover:bg-muted"
-                aria-label={`Remove ${p.address}`}
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
-            </div>
-          );
-        })}
-      </div>
-    </>
   );
 }
 
@@ -312,7 +155,13 @@ function CalendarSection() {
     staleTime: 0,
   });
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ title: "", when: "", location: "", requestId: "" });
+  const [form, setForm] = useState({
+    title: "",
+    when: "",
+    location: "",
+    requestId: "",
+    propertyId: "",
+  });
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["appointments"] });
 
   const startOfToday = new Date();
@@ -395,13 +244,18 @@ function CalendarSection() {
                 startsAt,
                 location: form.location,
                 requestId: form.requestId || null,
+                propertyId: Number(form.propertyId),
               },
-            }).then(() => {
-              setForm({ title: "", when: "", location: "", requestId: "" });
-              setOpen(false);
-              notify("Appointment booked");
-              return refresh();
-            });
+            })
+              .then(() => {
+                setForm({ title: "", when: "", location: "", requestId: "", propertyId: "" });
+                setOpen(false);
+                notify("Appointment booked");
+                return refresh();
+              })
+              .catch(() =>
+                notify("Could not book this appointment. Check the selected property and event."),
+              );
           }}
           className="grid gap-3 rounded-lg border bg-card p-4 shadow-card sm:grid-cols-2"
         >
@@ -428,20 +282,31 @@ function CalendarSection() {
             aria-label="Location"
             className={inputClass}
           />
+          <div className="sm:col-span-2">
+            <PropertySelect
+              value={form.propertyId}
+              onChange={(value) => setForm({ ...form, propertyId: value, requestId: "" })}
+            />
+          </div>
           <select
             value={form.requestId}
             onChange={(e) => setForm({ ...form, requestId: e.target.value })}
             aria-label="Related request"
             className={`${inputClass} sm:col-span-2`}
           >
-            <option value="">Not linked to a request</option>
-            {requests.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.id} — {r.title}
-              </option>
-            ))}
+            <option value="">Property appointment (no repair event)</option>
+            {requests
+              .filter((r) => r.propertyId === Number(form.propertyId))
+              .map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.id} — {r.title}
+                </option>
+              ))}
           </select>
-          <button className="rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground sm:col-span-2">
+          <button
+            disabled={!form.propertyId}
+            className="rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground disabled:opacity-50 sm:col-span-2"
+          >
             Book appointment
           </button>
         </form>

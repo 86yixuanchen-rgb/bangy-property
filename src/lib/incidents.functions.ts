@@ -221,8 +221,8 @@ export const analyzeIncident = createServerFn({ method: "POST" })
   .validator(z.object({ id: requestId }))
   .handler(async ({ data }) => {
     const userId = await requireUserId();
-    const apiKey = process.env["DEEPSEEK_API_KEY"];
-    if (!apiKey) return { ok: false as const, code: "NOT_CONFIGURED" as const };
+    const { aiConfigured, fetchDeepSeek } = await import("./ai-gateway.server");
+    if (!aiConfigured()) return { ok: false as const, code: "NOT_CONFIGURED" as const };
 
     const db = await database();
     const [request] = await db
@@ -258,6 +258,7 @@ export const analyzeIncident = createServerFn({ method: "POST" })
         id: request.id,
         title: request.title,
         address: request.address,
+        propertyId: request.propertyId,
         priority: request.priority,
         column: request.boardColumn,
         status: request.status,
@@ -283,9 +284,8 @@ export const analyzeIncident = createServerFn({ method: "POST" })
       today: new Date().toISOString(),
     };
 
-    const response = await fetch("https://api.deepseek.com/chat/completions", {
+    const response = await fetchDeepSeek({
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       signal: AbortSignal.timeout(40000),
       body: JSON.stringify({
         model: "deepseek-chat",
