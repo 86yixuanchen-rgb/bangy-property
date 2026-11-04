@@ -1,486 +1,596 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import {
-  Activity,
-  Hourglass,
+  ArrowDownUp,
+  ArrowUpRight,
   AlertCircle,
-  CalendarCheck,
-  Bot,
-  ChevronRight,
+  CheckCircle2,
+  Clock3,
+  ClipboardList,
+  Columns3,
+  List,
   Plus,
-  Filter,
+  Search,
+  SlidersHorizontal,
   X,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { RequestCard } from "@/components/RequestCard";
-import { columns, priorityTone, type Priority } from "@/lib/data";
+import { Button } from "@/components/ui/button";
+import {
+  PageHeading,
+  StatusLabel,
+  ErrorState,
+  EmptyState,
+  LoadingRows,
+  PendingLabel,
+  FormDialog,
+} from "@/components/workspace-ui";
+import { columns, priorityTone, type Priority, type RepairRequest } from "@/lib/data";
 import { useWorkspace } from "@/lib/workspace";
 import { useAuth } from "@/lib/auth";
-import { listAppointments, loadSampleData } from "@/lib/workspace.functions";
+import { loadSampleData } from "@/lib/workspace.functions";
+import {
+  defaultRepairPreferences,
+  readRepairPreferences,
+  selectRepairs,
+  type RepairPreferences,
+} from "@/lib/repair-filters";
+import { useAsyncAction, useDebouncedValue, useStoredPreference } from "@/hooks/use-ui-state";
 
 export const Route = createFileRoute("/")({
-  validateSearch: (search: Record<string, unknown>): { view?: "list" } =>
-    search["view"] === "list" ? { view: "list" } : {},
-  head: () => ({
-    meta: [
-      { title: "Home — RepairFlow" },
-      {
-        name: "description",
-        content: "See every repair request, who it's waiting on and what happens next.",
-      },
-    ],
-  }),
+  validateSearch: (search: Record<string, unknown>): { view?: "list" | "board" } =>
+    search["view"] === "list" || search["view"] === "board" ? { view: search["view"] } : {},
+  head: () => ({ meta: [{ title: "Maintenance overview — RepairFlow" }] }),
   component: Dashboard,
 });
+
 function Dashboard() {
-  const { requests, loaded, addRequest, notify } = useWorkspace();
-  const queryClient = useQueryClient();
-  const { data: appointments = [] } = useQuery({
-    queryKey: ["appointments"],
-    queryFn: () => listAppointments(),
-  });
+  const { requests, loaded, loadError, permissionError, retryRequests, notify } = useWorkspace();
   const { user } = useAuth();
-  const navigate = useNavigate();
-  const search = Route.useSearch();
-  const [view, setView] = useState<"board" | "list">(search.view === "list" ? "list" : "board");
-  useEffect(() => {
-    setView(search.view === "list" ? "list" : "board");
-  }, [search.view]);
-  const [priority, setPriority] = useState<"All" | Priority>("All");
-  const now = new Date();
-  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  const monthNames = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-  ];
-  const dateStr = `${dayNames[now.getDay()]}, ${now.getDate()} ${monthNames[now.getMonth()]}`;
-  const hour = now.getHours();
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  const [newOpen, setNewOpen] = useState(false);
-  const [aiSeed, setAiSeed] = useState(0);
-  const filtered = useMemo(
-    () => (priority === "All" ? requests : requests.filter((item) => item.priority === priority)),
-    [requests, priority],
+  const [preferences, setPreferences] = useStoredPreference(
+    user?.email ? `repairflow.repairs.v2:${user.email}` : null,
+    defaultRepairPreferences,
+    readRepairPreferences,
+    "sessionStorage",
   );
-  const attentionAll = useMemo(() => {
-    const weight = { Urgent: 0, High: 1, Medium: 2, Low: 3 } as const;
-    return requests
-      .filter(
-        (r) =>
-          r.column !== "Completed" &&
-          (r.column === "Action Needed" || r.priority === "Urgent" || r.priority === "High"),
-      )
-      .sort(
-        (a, b) =>
-          Number(b.column === "Action Needed") - Number(a.column === "Action Needed") ||
-          weight[a.priority] - weight[b.priority],
-      );
-  }, [requests]);
-  const briefing = attentionAll.slice(0, 3);
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-  const scheduledToday = appointments.filter(
-    (a) =>
-      a.startsAt >= startOfDay.getTime() && a.startsAt < startOfDay.getTime() + 24 * 3600 * 1000,
-  ).length;
-  const stats = [
+  const routeSearch = Route.useSearch();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [newOpen, setNewOpen] = useState(false);
+  const [aiSignal, setAiSignal] = useState(0);
+  const sample = useAsyncAction();
+  useEffect(() => {
+    if (routeSearch.view) setPreferences((p) => ({ ...p, view: routeSearch.view! }));
+  }, [routeSearch.view]); // eslint-disable-line react-hooks/exhaustive-deps
+  const debouncedQuery = useDebouncedValue(preferences.query);
+  const filtered = useMemo(
+    () =>
+      selectRepairs(requests, { ...preferences, query: preferences.query ? debouncedQuery : "" }),
+    [requests, preferences, debouncedQuery],
+  );
+  const responsibilityOptions = [
+    ...new Set([
+      ...requests.map((r) => r.waitingOn),
+      ...(preferences.responsibility === "All" ? [] : [preferences.responsibility]),
+    ]),
+  ]
+    .filter(Boolean)
+    .sort();
+  const summaries = [
     {
-      label: "Active Requests",
+      label: "Open repairs",
       value: requests.filter((r) => r.column !== "Completed").length,
-      icon: Activity,
-      tone: "text-primary bg-primary-soft",
+      status: "Active",
+      icon: ClipboardList,
+      tone: "blue",
     },
     {
-      label: "Waiting",
-      value: requests.filter((r) => r.column === "Waiting").length,
-      icon: Hourglass,
-      tone: "text-waiting bg-waiting-soft",
-    },
-    {
-      label: "Need Attention",
+      label: "Needs attention",
       value: requests.filter((r) => r.column === "Action Needed").length,
+      status: "Action Needed",
       icon: AlertCircle,
-      tone: "text-attention bg-attention-soft",
+      tone: "amber",
     },
     {
-      label: "Scheduled Today",
-      value: scheduledToday,
-      icon: CalendarCheck,
-      tone: "text-scheduled bg-scheduled-soft",
+      label: "Waiting for response",
+      value: requests.filter((r) => r.column === "Waiting").length,
+      status: "Waiting",
+      icon: Clock3,
+      tone: "neutral",
     },
-  ];
+    {
+      label: "Scheduled repairs",
+      value: requests.filter((r) => r.column === "Scheduled").length,
+      status: "Scheduled",
+      icon: CheckCircle2,
+      tone: "green",
+    },
+  ] as const;
+  const attention = requests.filter((r) => r.column === "Action Needed").slice(0, 3);
+  const activeFilters = [
+    preferences.status !== "All"
+      ? {
+          label: preferences.status === "Action Needed" ? "Needs attention" : preferences.status,
+          key: "status" as const,
+        }
+      : null,
+    preferences.priority !== "All"
+      ? { label: preferences.priority, key: "priority" as const }
+      : null,
+    preferences.responsibility !== "All"
+      ? { label: preferences.responsibility, key: "responsibility" as const }
+      : null,
+  ].filter((x) => x !== null);
+  const update = <K extends keyof RepairPreferences>(key: K, value: RepairPreferences[K]) =>
+    setPreferences((p) => ({ ...p, [key]: value }));
+  const clear = () =>
+    setPreferences((p) => ({ ...defaultRepairPreferences, status: "All", view: p.view }));
+  const changeSort = (sort: RepairPreferences["sort"]) =>
+    setPreferences((p) => ({
+      ...p,
+      sort,
+      direction: p.sort === sort && p.direction === "asc" ? "desc" : "asc",
+    }));
+  const sortHeader = (label: string, key: RepairPreferences["sort"]) => (
+    <button onClick={() => changeSort(key)}>
+      {label}
+      <ArrowDownUp className="h-3.5 w-3.5" aria-hidden="true" />
+    </button>
+  );
   return (
-    <AppShell openAssistantSignal={aiSeed}>
-      <div className="home-dashboard">
-        <div className="home-heading">
-          <div>
-            <p className="text-sm text-muted-foreground">{dateStr}</p>
-            <h1 className="text-2xl font-semibold tracking-tight">
-              {greeting}, {user?.name ?? "there"}
-            </h1>
-          </div>
-          <button
-            onClick={() => setNewOpen(true)}
-            className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-          >
-            <Plus className="h-4 w-4" />
-            Create request
-          </button>
-        </div>
-        <div className="home-facts">
-          {stats.map((s) => (
-            <div
+    <AppShell openAssistantSignal={aiSignal}>
+      <div className="overview-page">
+        <PageHeading
+          title="Maintenance overview"
+          description="Track outstanding repairs, who needs to act, and what happens next."
+          action={
+            <Button onClick={() => setNewOpen(true)}>
+              <Plus />
+              Create repair
+            </Button>
+          }
+        />
+        {loadError && (
+          <ErrorState
+            message={
+              permissionError
+                ? "Your session could not be authorised. Sign in again to load your repairs."
+                : "We couldn’t load your repairs. Check your connection and try again."
+            }
+            {...(!permissionError ? { retry: retryRequests } : {})}
+          />
+        )}
+        {permissionError && (
+          <Button asChild variant="outline" className="mb-4">
+            <Link to="/login">Sign in again</Link>
+          </Button>
+        )}
+        <section className="summary-grid" aria-label="Repair summaries">
+          {summaries.map((s) => (
+            <button
               key={s.label}
-              className="flex items-center gap-3 rounded-lg border bg-card p-4 shadow-card sm:p-5"
+              className={`summary-panel summary-${s.tone}`}
+              aria-pressed={preferences.status === s.status}
+              onClick={() => {
+                setPreferences({ ...defaultRepairPreferences, status: s.status });
+                document
+                  .getElementById("repair-requests")
+                  ?.scrollIntoView({ block: "start", behavior: "instant" });
+              }}
             >
-              <div className={`grid h-10 w-10 place-items-center rounded-md ${s.tone}`}>
-                <s.icon className="h-5 w-5" />
-              </div>
-              <div>
-                <div className="text-2xl font-semibold">{s.value}</div>
-                <div className="text-xs text-muted-foreground sm:text-sm">{s.label}</div>
-              </div>
-            </div>
+              <span className="summary-icon">
+                <s.icon />
+              </span>
+              <span className="summary-text">
+                <span>{s.label}</span>
+                <strong>{loaded ? s.value.toLocaleString("en-AU") : "—"}</strong>
+              </span>
+              <ArrowUpRight className="summary-link" />
+            </button>
           ))}
-        </div>
-        <div className="operations-grid">
-          {requests.length > 0 ? (
-            <section className="home-briefing">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="grid h-8 w-8 place-items-center rounded-md bg-ai-soft text-ai">
-                    <Bot className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <div className="text-xs font-medium uppercase tracking-wide text-ai">
-                      Morning briefing
-                    </div>
-                    <h2 className="font-semibold">
-                      {attentionAll.length === 0
-                        ? "Nothing needs your attention right now"
-                        : `${attentionAll.length} ${attentionAll.length === 1 ? "request needs" : "requests need"} your attention`}
-                    </h2>
-                  </div>
-                </div>
+        </section>
+        <section
+          id="repair-requests"
+          className="surface repairs-surface"
+          aria-labelledby="repairs-heading"
+        >
+          <header className="surface-heading">
+            <div>
+              <h2 id="repairs-heading">
+                Repair requests{" "}
+                <span className="count-label">{loaded ? requests.length : "—"}</span>
+              </h2>
+              <p>Keep every repair moving with a clear next action.</p>
+            </div>
+            <div className="view-switch" role="group" aria-label="Repair view">
+              {(["list", "board"] as const).map((view) => (
                 <button
-                  onClick={() => setAiSeed((v) => v + 1)}
-                  className="rounded-md border border-ai/30 bg-ai-soft px-3 py-2 text-sm font-medium text-ai hover:opacity-90"
+                  key={view}
+                  aria-label={view === "list" ? "Table view" : "By stage view"}
+                  title={view === "list" ? "Table view" : "By stage view"}
+                  aria-pressed={preferences.view === view}
+                  onClick={() => update("view", view)}
                 >
-                  Ask AI to prioritise my day
+                  {view === "list" ? <List /> : <Columns3 />}
                 </button>
-              </div>
-              <div className="mt-4 divide-y rounded-md border">
-                {briefing.map((b) => (
-                  <Link
-                    key={b.id}
-                    to="/requests/$id"
-                    params={{ id: b.id }}
-                    className="flex items-center gap-3 px-3 py-3 text-sm hover:bg-muted"
-                  >
-                    <span className="h-2 w-2 shrink-0 rounded-full bg-attention" />
-                    <span className="font-mono text-xs text-muted-foreground">{b.id}</span>
-                    <span className="hidden w-36 truncate font-medium sm:block">{b.title}</span>
-                    <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                      {b.column === "Action Needed" ? "Action needed" : `${b.priority} priority`} ·{" "}
-                      {b.nextAction}
-                    </span>
-                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  </Link>
+              ))}
+            </div>
+          </header>
+          <div className="repair-filters">
+            <label className="repair-search">
+              <Search aria-hidden="true" />
+              <input
+                aria-label="Search repairs"
+                placeholder="Search issue, property or contact…"
+                value={preferences.query}
+                onChange={(e) => update("query", e.target.value)}
+              />
+              {preferences.query && (
+                <button aria-label="Clear search" onClick={() => update("query", "")}>
+                  <X />
+                </button>
+              )}
+            </label>
+            <label className="filter-field">
+              <span>Status</span>
+              <select
+                aria-label="Filter status"
+                value={preferences.status}
+                onChange={(e) => update("status", e.target.value as RepairPreferences["status"])}
+              >
+                <option value="All">All statuses</option>
+                <option value="Active">Open repairs</option>
+                {columns.map((c) => (
+                  <option key={c.name}>{c.name}</option>
                 ))}
-              </div>
-            </section>
-          ) : null}
-          {loaded && requests.length === 0 ? (
-            <section className="home-empty">
-              <h2 className="text-lg font-semibold">No repair requests yet</h2>
-              <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
-                Create your first request, or connect Gmail in the Inbox and create requests from
-                tenant emails. Want to look around first? Load a few clearly labelled sample
-                requests.
-              </p>
-              <div className="mt-4 flex flex-wrap justify-center gap-2">
-                <button
-                  onClick={() => setNewOpen(true)}
-                  className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-                >
-                  New request
-                </button>
-                <button
-                  onClick={() =>
-                    void loadSampleData().then(() => {
-                      notify("Sample requests loaded");
-                      return queryClient.invalidateQueries({ queryKey: ["requests"] });
-                    })
-                  }
-                  className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
-                >
-                  Load sample data
-                </button>
-              </div>
-            </section>
-          ) : null}
-          <section className="operations-workflow">
-            <div className="workflow-toolbar mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-3">
-                <h2 className="font-semibold">Repair workflow</h2>
-                <div
-                  className="flex rounded-md border bg-card p-0.5 text-xs"
-                  role="group"
-                  aria-label="View"
-                >
-                  {(
-                    [
-                      ["board", "By stage"],
-                      ["list", "List"],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <button
-                      key={key}
-                      onClick={() => setView(key)}
-                      aria-pressed={view === key}
-                      className={`rounded px-2.5 py-1 ${view === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                    >
-                      {label}
-                    </button>
-                  ))}
+              </select>
+            </label>
+            <label className="filter-field">
+              <span>Responsibility</span>
+              <select
+                aria-label="Filter responsibility"
+                value={preferences.responsibility}
+                onChange={(e) => update("responsibility", e.target.value)}
+              >
+                <option value="All">Anyone</option>
+                {responsibilityOptions.map((o) => (
+                  <option key={o}>{o}</option>
+                ))}
+              </select>
+            </label>
+            <label className="filter-field">
+              <span>Urgency</span>
+              <select
+                aria-label="Filter urgency"
+                value={preferences.priority}
+                onChange={(e) =>
+                  update("priority", e.target.value as RepairPreferences["priority"])
+                }
+              >
+                {["All", "Urgent", "High", "Medium", "Low"].map((o) => (
+                  <option key={o} value={o}>
+                    {o === "All" ? "Any urgency" : o}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="filter-field sort-field">
+              <span>Sort by</span>
+              <select
+                aria-label="Sort repairs"
+                value={preferences.sort}
+                onChange={(e) => update("sort", e.target.value as RepairPreferences["sort"])}
+              >
+                <option value="priority">Urgency</option>
+                <option value="issue">Issue</option>
+                <option value="property">Property</option>
+                <option value="status">Status</option>
+              </select>
+            </label>
+          </div>
+          <div className="active-filters">
+            <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
+            {activeFilters.map((f) => (
+              <button
+                key={f.key}
+                onClick={() => setPreferences((p) => ({ ...p, [f.key]: "All" }))}
+                aria-label={`Remove ${f.label} filter`}
+              >
+                {f.label}
+                <X />
+              </button>
+            ))}
+            <button className="clear-filters" onClick={clear}>
+              Clear filters
+            </button>
+            <span className="filter-results" role="status" aria-live="polite">
+              {preferences.query !== debouncedQuery && preferences.query
+                ? "Updating results…"
+                : `${filtered.length} ${filtered.length === 1 ? "repair" : "repairs"}`}
+            </span>
+          </div>
+          {!loaded && !loadError ? (
+            <LoadingRows />
+          ) : loaded && requests.length === 0 ? (
+            <EmptyState
+              title="Your first repair starts here"
+              description="Create a repair or connect Gmail to review incoming maintenance emails."
+              action={
+                <div className="flex flex-wrap justify-center gap-2">
+                  <Button onClick={() => setNewOpen(true)}>Create repair</Button>
+                  <Button
+                    variant="outline"
+                    disabled={sample.pending}
+                    onClick={() =>
+                      void sample.run(async () => {
+                        const result = await loadSampleData();
+                        if (!result.ok) {
+                          await queryClient.invalidateQueries({ queryKey: ["requests"] });
+                          throw new Error("Sample load was not confirmed");
+                        }
+                        await queryClient.invalidateQueries({ queryKey: ["requests"] });
+                        notify("Sample repairs loaded");
+                      }, "Could not load sample repairs. Please try again.")
+                    }
+                  >
+                    {sample.pending ? "Loading…" : "Explore sample data"}
+                  </Button>
                 </div>
-              </div>
-              <div className="flex items-center gap-2">
-                {priority !== "All" && (
-                  <button
-                    className="filter-reset"
-                    onClick={() => setPriority("All")}
-                    aria-label="Clear priority filter"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                    Clear filter
-                  </button>
-                )}
-                <label className="flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm">
-                  <Filter className="h-4 w-4 text-muted-foreground" />
-                  <span className="sr-only sm:not-sr-only">Priority</span>
-                  <select
-                    aria-label="Filter priority"
-                    value={priority}
-                    onChange={(e) => setPriority(e.target.value as "All" | Priority)}
-                    className="bg-transparent outline-none"
-                  >
-                    <option>All</option>
-                    <option>Urgent</option>
-                    <option>High</option>
-                    <option>Medium</option>
-                    <option>Low</option>
-                  </select>
-                </label>
-              </div>
-            </div>
-            {view === "list" ? (
-              <div className="overflow-x-auto rounded-lg border bg-card shadow-card">
-                <table className="w-full min-w-[720px] text-left text-sm">
-                  <thead className="border-b bg-muted/50 text-xs text-muted-foreground">
-                    <tr>
-                      <th className="px-4 py-2 font-medium">Request</th>
-                      <th className="px-4 py-2 font-medium">Priority</th>
-                      <th className="px-4 py-2 font-medium">Stage</th>
-                      <th className="px-4 py-2 font-medium">Next to act</th>
-                      <th className="px-4 py-2 font-medium">Next action</th>
-                      <th className="px-4 py-2 font-medium">Updated</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {filtered.map((r) => (
-                      <tr key={r.id} className="hover:bg-muted/50">
-                        <td className="px-4 py-3">
-                          <Link
-                            to="/requests/$id"
-                            params={{ id: r.id }}
-                            className="block focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-                          >
-                            <span className="font-mono text-xs text-muted-foreground">{r.id}</span>
-                            <span className="block font-medium">{r.title}</span>
-                            <span className="block text-xs text-muted-foreground">{r.address}</span>
-                          </Link>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`rounded border px-2 py-0.5 text-xs ${priorityTone[r.priority]}`}
-                          >
-                            {r.priority}
+              }
+            />
+          ) : loaded && filtered.length === 0 ? (
+            <EmptyState
+              search
+              title="No repairs match your filters"
+              description="Try a different search or clear your filters to see more repairs."
+              action={
+                <Button variant="outline" onClick={clear}>
+                  Clear filters
+                </Button>
+              }
+            />
+          ) : preferences.view === "list" ? (
+            <div className="repair-table-wrap">
+              <table className="repair-table">
+                <thead>
+                  <tr>
+                    <th
+                      aria-sort={
+                        preferences.sort === "issue"
+                          ? preferences.direction === "asc"
+                            ? "ascending"
+                            : "descending"
+                          : "none"
+                      }
+                    >
+                      {sortHeader("Repair issue", "issue")}
+                    </th>
+                    <th
+                      className="table-property"
+                      aria-sort={
+                        preferences.sort === "property"
+                          ? preferences.direction === "asc"
+                            ? "ascending"
+                            : "descending"
+                          : "none"
+                      }
+                    >
+                      {sortHeader("Property", "property")}
+                    </th>
+                    <th
+                      aria-sort={
+                        preferences.sort === "status"
+                          ? preferences.direction === "asc"
+                            ? "ascending"
+                            : "descending"
+                          : "none"
+                      }
+                    >
+                      {sortHeader("Status", "status")}
+                    </th>
+                    <th>Next to act</th>
+                    <th>Next action</th>
+                    <th className="table-updated">Last update</th>
+                    <th>
+                      <span className="sr-only">Open repair</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((r) => (
+                    <tr key={r.id}>
+                      <td data-label="Repair issue">
+                        <Link to="/requests/$id" params={{ id: r.id }} className="repair-title">
+                          <span>
+                            {r.id}
+                            <span className={`priority-label ${priorityTone[r.priority]}`}>
+                              {r.priority}
+                            </span>
                           </span>
-                        </td>
-                        <td className="px-4 py-3">{r.column}</td>
-                        <td className="px-4 py-3 text-muted-foreground">{r.waitingOn}</td>
-                        <td className="px-4 py-3">{r.nextAction}</td>
-                        <td className="px-4 py-3 text-muted-foreground">{r.lastUpdate}</td>
-                      </tr>
-                    ))}
-                    {filtered.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} className="p-8 text-center text-sm text-muted-foreground">
-                          No matching requests
-                        </td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-            ) : null}
-            <div className={`home-board-grid ${view === "list" ? "hidden" : ""}`}>
-              {columns.map((c) => {
-                const items = filtered.filter((r) => r.column === c.name);
-                return (
-                  <details key={c.name} className="stage-lane" open>
-                    <summary className="stage-heading">
-                      <span className={`h-2 w-2 rounded-full ${c.dot}`} />
-                      <span className="text-sm font-medium">{c.name}</span>
-                      <span className={`ml-auto rounded px-1.5 text-xs font-medium ${c.tone}`}>
-                        {items.length}
-                      </span>
-                    </summary>
-                    <div className="stage-records">
-                      {items.map((r) => (
-                        <RequestCard key={r.id} r={r} />
-                      ))}
-                      {items.length === 0 ? (
-                        <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-                          No matching requests
-                        </div>
-                      ) : null}
-                    </div>
-                  </details>
-                );
-              })}
+                          <strong>{r.title}</strong>
+                          <span className="compact-address">{r.address}</span>
+                        </Link>
+                      </td>
+                      <td data-label="Property" className="table-property">
+                        {r.address}
+                      </td>
+                      <td data-label="Status">
+                        <StatusLabel status={r.column} />
+                        <span className="status-description">{r.status}</span>
+                      </td>
+                      <td data-label="Next to act">
+                        <span className="actor-label">{r.waitingOn || "Unassigned"}</span>
+                      </td>
+                      <td data-label="Next action" className="table-next">
+                        {r.nextAction || "Next action to be confirmed"}
+                      </td>
+                      <td data-label="Last update" className="table-updated">
+                        {r.lastUpdate}
+                      </td>
+                      <td className="table-open">
+                        <Link to="/requests/$id" params={{ id: r.id }} aria-label={`Open ${r.id}`}>
+                          <ArrowUpRight />
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </section>
-        </div>
+          ) : (
+            <div className="stage-list">
+              {columns.map((c) => (
+                <details className="stage-lane" key={c.name} open>
+                  <summary>
+                    <StatusLabel status={c.name} />
+                    <span>{filtered.filter((r) => r.column === c.name).length}</span>
+                  </summary>
+                  {filtered
+                    .filter((r) => r.column === c.name)
+                    .map((r) => (
+                      <RequestCard key={r.id} r={r} />
+                    ))}
+                  {filtered.every((r) => r.column !== c.name) && (
+                    <p className="p-4 text-sm text-muted-foreground">
+                      No matching repairs in this stage.
+                    </p>
+                  )}
+                </details>
+              ))}
+            </div>
+          )}
+          {sample.error && <ErrorState message={sample.error} />}
+          {loaded && requests.length > 0 && (
+            <footer className="table-footer">
+              Showing {filtered.length} of {requests.length} repairs
+              <span>Last update is shown where due dates are unavailable.</span>
+            </footer>
+          )}
+        </section>
+        <section className="surface attention-surface" aria-label="Needs attention">
+          <header className="surface-heading">
+            <div>
+              <h2>Needs attention</h2>
+              <p>Repairs marked for manager action.</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => setAiSignal((v) => v + 1)}>
+              Ask AI to prioritise
+            </Button>
+          </header>
+          {attention.length ? (
+            <div className="attention-queue">
+              {attention.map((r) => (
+                <Link key={r.id} to="/requests/$id" params={{ id: r.id }}>
+                  <span
+                    className={`attention-indicator ${r.priority === "Urgent" ? "urgent" : ""}`}
+                  />
+                  <span>
+                    <strong>{r.title}</strong>
+                    <small>{r.address}</small>
+                    <span>{r.nextAction}</span>
+                  </span>
+                  <ArrowUpRight />
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <p className="p-6 text-sm text-muted-foreground">
+              No requests currently need attention.
+            </p>
+          )}
+        </section>
       </div>
-      {newOpen ? (
-        <CreateRequest
+      {newOpen && (
+        <CreateRepairDialog
           onClose={() => setNewOpen(false)}
-          onSubmit={async (input) => {
-            const item = await addRequest(input);
-            setNewOpen(false);
-            notify(`${item.id} created`);
-            navigate({ to: "/requests/$id", params: { id: item.id } });
+          onCreated={(r) => {
+            notify(`${r.id} created`);
+            void navigate({ to: "/requests/$id", params: { id: r.id } });
           }}
         />
-      ) : null}
+      )}
     </AppShell>
   );
 }
 
-function CreateRequest({
+function CreateRepairDialog({
   onClose,
-  onSubmit,
+  onCreated,
 }: {
   onClose: () => void;
-  onSubmit: (input: { title: string; address: string; priority: Priority }) => Promise<void>;
+  onCreated: (r: RepairRequest) => void;
 }) {
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState("");
+  const { addRequest } = useWorkspace();
   const [title, setTitle] = useState("");
   const [address, setAddress] = useState("");
   const [priority, setPriority] = useState<Priority>("Medium");
+  const action = useAsyncAction();
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4"
-      role="dialog"
-      aria-modal="true"
+    <FormDialog
+      title="Create repair"
+      description="Add the issue and property. The repair starts in New, ready for manager review."
+      dirty={Boolean(title || address || priority !== "Medium")}
+      busy={action.pending}
+      onClose={onClose}
     >
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          if (saving) return;
-          setSaving(true);
-          setSaveError("");
-          try {
-            await onSubmit({ title, address, priority });
-          } catch {
-            setSaveError("Could not create the request. Please try again.");
-          } finally {
-            setSaving(false);
-          }
-        }}
-        className="w-full max-w-lg rounded-xl border bg-card p-6 shadow-float"
-      >
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold">Create repair request</h2>
-            <p className="text-sm text-muted-foreground">Add a new issue to the triage queue.</p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded p-1 hover:bg-muted"
-            aria-label="Close"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="mt-5 space-y-4">
-          <label className="block text-sm font-medium">
-            Issue
+      {({ close, finish }) => (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void action.run(async () => {
+              const item = await addRequest({
+                title: title.trim(),
+                address: address.trim(),
+                priority,
+              });
+              finish();
+              onCreated(item);
+            }, "Could not create this repair. Your details have been kept. Please try again.");
+          }}
+          className="form-stack"
+        >
+          <label>
+            Repair issue
             <input
-              required
               autoFocus
+              required
+              maxLength={200}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Leaking bathroom tap"
-              className="mt-1 h-10 w-full rounded-md border px-3 font-normal outline-none focus:border-ring"
+              placeholder="e.g. Kitchen tap leaking"
             />
           </label>
-          <label className="block text-sm font-medium">
+          <label>
             Property address
             <input
               required
+              maxLength={300}
               value={address}
               onChange={(e) => setAddress(e.target.value)}
-              placeholder="e.g. 12 Hill St, Newtown"
-              className="mt-1 h-10 w-full rounded-md border px-3 font-normal outline-none focus:border-ring"
+              placeholder="Street address and unit number"
             />
           </label>
-          <label className="block text-sm font-medium">
+          <label>
             Priority
-            <select
-              value={priority}
-              onChange={(e) => setPriority(e.target.value as Priority)}
-              className="mt-1 h-10 w-full rounded-md border bg-card px-3 font-normal"
-            >
-              <option>Urgent</option>
-              <option>High</option>
-              <option>Medium</option>
-              <option>Low</option>
+            <select value={priority} onChange={(e) => setPriority(e.target.value as Priority)}>
+              {["Urgent", "High", "Medium", "Low"].map((p) => (
+                <option key={p}>{p}</option>
+              ))}
             </select>
           </label>
-        </div>
-        {saveError ? (
-          <p role="alert" className="mt-3 text-sm text-destructive">
-            {saveError}
-          </p>
-        ) : null}
-        <div className="mt-6 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-md border px-4 py-2 text-sm">
-            Cancel
-          </button>
-          <button
-            disabled={saving}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
-          >
-            Create request
-          </button>
-        </div>
-      </form>
-    </div>
+          {action.error && <ErrorState message={action.error} />}
+          <div className="form-actions">
+            <Button type="button" variant="outline" disabled={action.pending} onClick={close}>
+              Cancel
+            </Button>
+            <Button disabled={action.pending || !title.trim() || !address.trim()}>
+              {action.pending ? <PendingLabel>Creating…</PendingLabel> : "Create repair"}
+            </Button>
+          </div>
+        </form>
+      )}
+    </FormDialog>
   );
 }

@@ -9,12 +9,15 @@ export type Toast = { id: number; message: string };
 type WorkspaceValue = {
   requests: RepairRequest[];
   loaded: boolean;
+  loadError: boolean;
+  permissionError: boolean;
+  retryRequests: () => void;
   addRequest: (input: {
     title: string;
     address: string;
     priority: Priority;
   }) => Promise<RepairRequest>;
-  updateRequest: (id: string, patch: Partial<RepairRequest>) => void;
+  updateRequest: (id: string, patch: Partial<RepairRequest>) => Promise<void>;
   toasts: Toast[];
   notify: (message: string) => void;
   dismissToast: (id: number) => void;
@@ -25,7 +28,7 @@ const WorkspaceContext = createContext<WorkspaceValue | null>(null);
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const { isSignedIn } = useAuth();
-  const { data } = useQuery({
+  const { data, isError, error, refetch } = useQuery({
     queryKey: ["requests"],
     queryFn: () => listRequests(),
     enabled: isSignedIn,
@@ -42,13 +45,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   };
 
   const value = useMemo<WorkspaceValue>(() => {
-    const rollback = (message: string) => {
-      notify(message);
-      void queryClient.invalidateQueries({ queryKey: ["requests"] });
-    };
     return {
       requests,
       loaded: data !== undefined,
+      loadError: isError,
+      permissionError: error instanceof Error && /unauthorized|forbidden/i.test(error.message),
+      retryRequests: () => {
+        void refetch();
+      },
       addRequest: async (input) => {
         const item = await createRequest({ data: input });
         queryClient.setQueryData<RepairRequest[]>(["requests"], (items) => [
@@ -57,20 +61,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         ]);
         return item;
       },
-      updateRequest: (id, patch) => {
-        queryClient.setQueryData<RepairRequest[]>(["requests"], (items) =>
-          (items ?? []).map((item) => (item.id === id ? { ...item, ...patch } : item)),
-        );
+      updateRequest: async (id, patch) => {
         const { id: _ignored, ...fields } = patch;
-        patchRequest({ data: { id, patch: fields } }).catch(() =>
-          rollback("Could not save the change"),
+        const result = await patchRequest({ data: { id, patch: fields } });
+        if (!result.ok) throw new Error("Request update was not confirmed");
+        // Consequential changes become visible only after the server confirms them.
+        queryClient.setQueryData<RepairRequest[]>(["requests"], (items) =>
+          (items ?? []).map((item) => (item.id === id ? { ...item, ...fields } : item)),
         );
       },
       toasts,
       notify,
       dismissToast: (id) => setToasts((items) => items.filter((item) => item.id !== id)),
     };
-  }, [requests, data, toasts, queryClient]);
+  }, [requests, data, isError, error, refetch, toasts, queryClient]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

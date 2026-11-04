@@ -17,7 +17,7 @@ export interface RepairRequest {
 export const requests: RepairRequest[] = [
   {
     id: "REQ-108",
-    title: "Dripping kitchen tap",
+    title: "[Sample] Dripping kitchen tap",
     address: "3/22 Oxford St, Paddington",
     priority: "Low",
     column: "New",
@@ -29,7 +29,7 @@ export const requests: RepairRequest[] = [
   },
   {
     id: "REQ-107",
-    title: "Broken window latch",
+    title: "[Sample] Broken window latch",
     address: "9 Ferry Rd, Glebe",
     priority: "Medium",
     column: "New",
@@ -41,7 +41,7 @@ export const requests: RepairRequest[] = [
   },
   {
     id: "REQ-101",
-    title: "Air Conditioning Not Working",
+    title: "[Sample] Air Conditioning Not Working",
     address: "14 King Street, Unit 7",
     priority: "Medium",
     column: "Waiting",
@@ -53,7 +53,7 @@ export const requests: RepairRequest[] = [
   },
   {
     id: "REQ-087",
-    title: "Garage Door Jammed",
+    title: "[Sample] Garage Door Jammed",
     address: "41 Wattle Ave, Marrickville",
     priority: "High",
     column: "Waiting",
@@ -65,7 +65,7 @@ export const requests: RepairRequest[] = [
   },
   {
     id: "REQ-076",
-    title: "Hot Water System Failure",
+    title: "[Sample] Hot Water System Failure",
     address: "5/118 Crown St, Surry Hills",
     priority: "Urgent",
     column: "Waiting",
@@ -77,7 +77,7 @@ export const requests: RepairRequest[] = [
   },
   {
     id: "REQ-099",
-    title: "Mould in bathroom",
+    title: "[Sample] Mould in bathroom",
     address: "2/7 Bay St, Coogee",
     priority: "Medium",
     column: "Waiting",
@@ -89,7 +89,7 @@ export const requests: RepairRequest[] = [
   },
   {
     id: "REQ-093",
-    title: "Water Leak Under Sink",
+    title: "[Sample] Water Leak Under Sink",
     address: "12 Hill St, Newtown",
     priority: "High",
     column: "Action Needed",
@@ -101,7 +101,7 @@ export const requests: RepairRequest[] = [
   },
   {
     id: "REQ-106",
-    title: "Electrical Issue — Power Points",
+    title: "[Sample] Electrical Issue — Power Points",
     address: "88 Park Rd, Alexandria",
     priority: "Urgent",
     column: "Action Needed",
@@ -113,7 +113,7 @@ export const requests: RepairRequest[] = [
   },
   {
     id: "REQ-095",
-    title: "Smoke alarm service",
+    title: "[Sample] Smoke alarm service",
     address: "6 Lyons Rd, Drummoyne",
     priority: "Medium",
     column: "Scheduled",
@@ -125,7 +125,7 @@ export const requests: RepairRequest[] = [
   },
   {
     id: "REQ-090",
-    title: "Blocked stormwater drain",
+    title: "[Sample] Blocked stormwater drain",
     address: "17 Elm Pl, Leichhardt",
     priority: "High",
     column: "Scheduled",
@@ -137,7 +137,7 @@ export const requests: RepairRequest[] = [
   },
   {
     id: "REQ-084",
-    title: "Oven element replacement",
+    title: "[Sample] Oven element replacement",
     address: "4/30 Cleveland St, Redfern",
     priority: "Low",
     column: "Completed",
@@ -158,7 +158,7 @@ export const columns: { name: Column; tone: string; dot: string }[] = [
 ];
 
 export const priorityTone: Record<Priority, string> = {
-  Urgent: "bg-attention-soft text-attention border-attention/20",
+  Urgent: "bg-red-50 text-red-700 border-red-200",
   High: "bg-waiting-soft text-waiting border-waiting/20",
   Medium: "bg-scheduled-soft text-scheduled border-scheduled/20",
   Low: "bg-new-soft text-new border-new/20",

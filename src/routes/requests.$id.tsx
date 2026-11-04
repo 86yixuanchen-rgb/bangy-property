@@ -1,3 +1,4 @@
+import { useDiscardGuard } from "@/hooks/use-discard-guard";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -19,6 +20,14 @@ import {
   Flag,
   CalendarDays,
 } from "lucide-react";
+import {
+  FormDialog,
+  ErrorState,
+  LoadingRows,
+  StatusLabel,
+  PendingLabel,
+} from "@/components/workspace-ui";
+import { useAsyncAction } from "@/hooks/use-ui-state";
 import { AppShell } from "@/components/AppShell";
 import { columns, priorityTone, type Column } from "@/lib/data";
 import { columnStatus, useWorkspace } from "@/lib/workspace";
@@ -114,9 +123,16 @@ function emailEntry(m: IncidentEmail, roleOf: Map<string, string>): Entry {
 
 function Detail() {
   const { id } = Route.useParams();
-  const { requests, updateRequest, notify } = useWorkspace();
+  const { requests, loaded, loadError, retryRequests, updateRequest, notify } = useWorkspace();
   const { user } = useAuth();
   const queryClient = useQueryClient();
+  const mutation = useAsyncAction();
+  const [actionContext, setActionContext] = useState("");
+  const perform = (context: string, task: () => Promise<void>, message: string) => {
+    setActionContext(context);
+    return mutation.run(task, message);
+  };
+  const [mailError, setMailError] = useState("");
   const [reminderOpen, setReminderOpen] = useState(false);
   const [reminder, setReminder] = useState({ to: "", subject: "", body: "" });
   const [sending, setSending] = useState(false);
@@ -136,6 +152,19 @@ function Detail() {
     email: "",
   });
 
+  const dirty = Boolean(
+    quoteForm.supplier ||
+    quoteForm.amount ||
+    quoteForm.description ||
+    apptForm.title ||
+    apptForm.when ||
+    apptForm.location ||
+    person.name ||
+    person.email ||
+    note ||
+    (reminderOpen && (reminder.to || reminder.subject || reminder.body)),
+  );
+  const edits = useDiscardGuard(dirty, mutation.pending);
   const r = requests.find((x) => x.id === id);
   const incident = useQuery({
     queryKey: ["incident", id],
@@ -144,7 +173,6 @@ function Detail() {
   });
   const d = incident.data;
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["incident", id] });
-  const refreshSoon = () => window.setTimeout(() => void refresh(), 800);
 
   const analyze = async () => {
     setAnalyzing(true);
@@ -177,6 +205,19 @@ function Detail() {
     }
   }, [d]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  if (!loaded || loadError)
+    return (
+      <AppShell>
+        <div className="repair-detail">
+          {loadError ? (
+            <ErrorState message="Could not load this repair." retry={retryRequests} />
+          ) : (
+            <LoadingRows label="Loading repair details" />
+          )}
+        </div>
+        {edits.confirmation}
+      </AppShell>
+    );
   if (!r) {
     return (
       <AppShell>
@@ -214,38 +255,46 @@ function Detail() {
     (d?.emails ?? []).filter((m) => m.fromEmail === email || m.toEmails.split(",").includes(email))
       .length;
 
-  const changeColumn = (column: Column, extra: Partial<typeof r> = {}) => {
-    updateRequest(r.id, {
+  const persistColumn = async (column: Column, extra: Partial<typeof r> = {}) => {
+    await updateRequest(r.id, {
       column,
       status: columnStatus[column],
       lastUpdate: "Just now",
       ...extra,
     });
-    refreshSoon();
+    await refresh();
   };
-
+  const changeColumn = (column: Column, extra: Partial<typeof r> = {}, context = "status") => {
+    return perform(
+      context,
+      () => persistColumn(column, extra),
+      "Could not confirm this update. Refresh the repair before trying again.",
+    );
+  };
   const submitPerson = async (e: React.FormEvent) => {
     e.preventDefault();
-    try {
-      await addParticipant({ data: { requestId: r.id, ...person } });
-      setPerson({ role: person.role, name: "", email: "" });
-      setAdding(false);
-      await refresh();
-      notify("Person added and matching emails linked");
-    } catch {
-      notify("Could not add this person. Check the email address.");
-    }
+    await perform(
+      "person",
+      async () => {
+        await addParticipant({ data: { requestId: r.id, ...person } });
+        setPerson({ role: person.role, name: "", email: "" });
+        setAdding(false);
+        await refresh();
+        notify("Person added and matching emails linked");
+      },
+      "Could not add this person. Check the email and try again; your entries have been kept.",
+    );
   };
-
-  const addSender = async (role: Role, name: string, email: string) => {
-    try {
-      await addParticipant({ data: { requestId: r.id, role, name, email } });
-      await refresh();
-      notify(`${name} added as ${role}`);
-    } catch {
-      notify("Could not add this person.");
-    }
-  };
+  const addSender = (role: Role, name: string, email: string) =>
+    perform(
+      "person",
+      async () => {
+        await addParticipant({ data: { requestId: r.id, role, name, email } });
+        await refresh();
+        notify(`${name} added as ${role}`);
+      },
+      "Could not add this person. Please try again.",
+    );
 
   const openReminder = () => {
     const waiting = r.waitingOn.toLowerCase();
@@ -264,75 +313,140 @@ function Detail() {
 
   const submitReminder = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSending(true);
-    try {
-      const result = await sendEmail({ data: { ...reminder, requestId: r.id } });
-      if (result.ok) {
-        setReminderOpen(false);
-        await refresh();
-        notify(`Email sent to ${reminder.to}`);
-      } else if (result.code === "RECONNECT") {
-        notify("Gmail needs to be connected (or reconnected) in the Inbox before sending.");
-      } else if (result.code === "UNCERTAIN") {
-        notify(
-          "Delivery is not confirmed. Check Gmail Sent; retrying will safely check the result.",
-        );
-      } else {
-        notify("The email could not be sent. Please try again.");
-      }
-    } catch {
-      notify("The email could not be sent. Please try again.");
-    } finally {
-      setSending(false);
-    }
+    await perform(
+      "email",
+      async () => {
+        setSending(true);
+        setMailError("");
+        try {
+          const result = await sendEmail({ data: { ...reminder, requestId: r.id } });
+          if (!result.ok) {
+            setMailError(
+              result.code === "UNCERTAIN"
+                ? "Delivery is not confirmed. Check Gmail Sent. Retrying this draft safely checks the result; do not create a replacement message."
+                : result.code === "RECONNECT"
+                  ? "Reconnect Gmail in the Inbox before sending. Your draft has been kept."
+                  : "The email could not be sent. Your draft has been kept; please try again.",
+            );
+            throw new Error("Send not confirmed");
+          }
+          setReminderOpen(false);
+          setReminder({ to: "", subject: "", body: "" });
+          await refresh();
+          notify(`Email sent to ${reminder.to}`);
+        } finally {
+          setSending(false);
+        }
+      },
+      "Email delivery was not confirmed. Review the message in the email dialog before retrying.",
+    );
   };
-
   const submitQuote = async (e: React.FormEvent) => {
     e.preventDefault();
     const amount = Number(quoteForm.amount);
     if (!Number.isFinite(amount) || amount <= 0) return;
-    await addQuote({
-      data: {
-        requestId: r.id,
-        supplier: quoteForm.supplier,
-        amount,
-        description: quoteForm.description,
+    await perform(
+      "quote",
+      async () => {
+        await addQuote({
+          data: {
+            requestId: r.id,
+            supplier: quoteForm.supplier,
+            amount,
+            description: quoteForm.description,
+          },
+        });
+        setQuoteForm({ supplier: "", amount: "", description: "" });
+        setQuoteOpen(false);
+        await refresh();
+        notify("Quote recorded");
       },
-    });
-    setQuoteForm({ supplier: "", amount: "", description: "" });
-    setQuoteOpen(false);
-    await refresh();
-    notify("Quote recorded");
+      "Could not confirm the quote was recorded. Your entries remain; refresh the repair before retrying.",
+    );
   };
-
-  const decide = async (id: number, decision: "Approved" | "Rejected") => {
-    await decideQuote({ data: { id, decision } });
-    if (decision === "Approved") changeColumn("Scheduled", { status: "Ready to schedule" });
-    await refresh();
-    notify(`Quote ${decision.toLowerCase()}`);
+  const decide = (id: number, decision: "Approved" | "Rejected") => {
+    return perform(
+      "decision",
+      async () => {
+        const result = await decideQuote({ data: { id, decision } });
+        if (!result.ok) throw new Error("Decision not confirmed");
+        if (decision === "Approved")
+          await persistColumn("Scheduled", { status: "Ready to schedule" });
+        await refresh();
+        notify(`Quote ${decision.toLowerCase()}`);
+      },
+      "Could not confirm the full quote update. Refresh to check its current approval status before retrying.",
+    );
   };
-
   const submitAppointment = async (e: React.FormEvent) => {
     e.preventDefault();
     const startsAt = new Date(apptForm.when).getTime();
     if (!Number.isFinite(startsAt)) return;
-    await addAppointment({
-      data: {
-        title: apptForm.title,
-        startsAt,
-        location: apptForm.location,
-        requestId: r.id,
+    await perform(
+      "appointment",
+      async () => {
+        await addAppointment({
+          data: { title: apptForm.title, startsAt, location: apptForm.location, requestId: r.id },
+        });
+        setApptForm({ title: "", when: "", location: "" });
+        setApptOpen(false);
+        await Promise.all([
+          refresh(),
+          queryClient.invalidateQueries({ queryKey: ["appointments"] }),
+        ]);
+        notify("Appointment booked");
       },
-    });
-    setApptForm({ title: "", when: "", location: "" });
-    setApptOpen(false);
-    await Promise.all([refresh(), queryClient.invalidateQueries({ queryKey: ["appointments"] })]);
-    notify("Appointment booked");
+      "Could not confirm the appointment was booked. Your entries remain; refresh before retrying.",
+    );
+  };
+  const submitNote = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!note.trim()) return;
+    await perform(
+      "note",
+      async () => {
+        await addNote({ data: { requestId: r.id, text: note.trim() } });
+        await refresh();
+        setNote("");
+        setNoteOpen(false);
+        notify("Timeline note added");
+      },
+      "Could not save your note. It has been kept in the note dialog. Please try again.",
+    );
   };
 
   return (
     <AppShell>
       <div className="repair-detail mx-auto max-w-6xl space-y-6 p-4 sm:p-6 lg:p-8">
+        {mutation.error &&
+          !(
+            (actionContext === "quote" && quoteOpen) ||
+            (actionContext === "appointment" && apptOpen) ||
+            (actionContext === "person" && adding) ||
+            (actionContext === "email" && reminderOpen) ||
+            (actionContext === "note" && noteOpen) ||
+            actionContext === "ai" ||
+            actionContext === "decision"
+          ) && (
+            <ErrorState
+              message={mutation.error}
+              retry={() => {
+                retryRequests();
+                void refresh();
+              }}
+            />
+          )}
+        {mutation.pending && (
+          <div className="mutation-status" role="status">
+            <PendingLabel>Saving changes…</PendingLabel>
+          </div>
+        )}
+        {incident.isError && (
+          <ErrorState
+            message="Could not load the communication and repair context."
+            retry={() => void incident.refetch()}
+          />
+        )}
         <Link
           to="/"
           className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
@@ -364,11 +478,10 @@ function Detail() {
                     />
                   ) : null}
                   <button
-                    onClick={() => {
-                      if (!current) {
-                        changeColumn(c.name);
+                    disabled={mutation.pending}
+                    onClick={async () => {
+                      if (!current && (await changeColumn(c.name)))
                         notify(`${r.id} moved to ${c.name}`);
-                      }
                     }}
                     aria-current={current ? "step" : undefined}
                     title={`Move to ${c.name}`}
@@ -413,6 +526,7 @@ function Detail() {
               <div className="text-sm text-muted-foreground">Waiting on {r.waitingOn}</div>
               <div className="mt-4 flex gap-2">
                 <button
+                  disabled={mutation.pending}
                   onClick={openReminder}
                   className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
                 >
@@ -425,6 +539,7 @@ function Detail() {
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="font-semibold">Activity timeline</h2>
                 <button
+                  disabled={mutation.pending}
                   onClick={() => setNoteOpen(true)}
                   className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
                 >
@@ -487,6 +602,7 @@ function Detail() {
                         {isMail ? (
                           <>
                             <button
+                              disabled={mutation.pending}
                               onClick={() => setExpanded(open ? null : t.key)}
                               className="mt-1 text-xs text-primary hover:underline"
                             >
@@ -502,6 +618,7 @@ function Detail() {
                                 Add {t.counterpart.email} as
                                 {participantRoles.map((role) => (
                                   <button
+                                    disabled={mutation.pending}
                                     key={role}
                                     onClick={() =>
                                       void addSender(
@@ -535,6 +652,34 @@ function Detail() {
           </div>
 
           <div className="detail-support space-y-6">
+            <section className="context-summary">
+              <h2>Repair context</h2>
+              <dl>
+                <div>
+                  <dt>Next to act</dt>
+                  <dd>{r.waitingOn || "Unassigned"}</dd>
+                </div>
+                <div>
+                  <dt>Assigned property manager</dt>
+                  <dd>Not separately recorded</dd>
+                </div>
+                <div>
+                  <dt>Viewing account</dt>
+                  <dd>{user?.name ?? "You"}</dd>
+                </div>
+                <div>
+                  <dt>Current status</dt>
+                  <dd>
+                    <StatusLabel status={r.column} />
+                    <span className="block mt-1">{r.status}</span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Last update</dt>
+                  <dd>{r.lastUpdate}</dd>
+                </div>
+              </dl>
+            </section>
             <div className="ai-review rounded-lg border bg-card p-5">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-ai">
@@ -543,7 +688,7 @@ function Detail() {
                 </div>
                 <button
                   onClick={() => void analyze()}
-                  disabled={analyzing}
+                  disabled={analyzing || mutation.pending}
                   className="flex items-center gap-1 rounded-md border bg-card px-2 py-1 text-xs hover:bg-muted disabled:opacity-60"
                 >
                   <RefreshCw className={`h-3 w-3 ${analyzing ? "animate-spin" : ""}`} />
@@ -559,19 +704,24 @@ function Detail() {
                   </div>
                   <div className="mt-4 flex flex-wrap items-center gap-2">
                     <button
-                      onClick={() => {
+                      disabled={mutation.pending}
+                      onClick={async () => {
                         const column = (columns.find((c) => c.name === d.ai?.column)?.name ??
                           r.column) as Column;
-                        changeColumn(column, {
-                          nextAction: d.ai?.nextStep ?? r.nextAction,
-                          waitingOn: d.ai?.waitingOn ?? r.waitingOn,
-                        });
-                        notify("AI suggestion applied to the request");
+                        const saved = await changeColumn(
+                          column,
+                          {
+                            nextAction: d.ai?.nextStep ?? r.nextAction,
+                            waitingOn: d.ai?.waitingOn ?? r.waitingOn,
+                          },
+                          "ai",
+                        );
+                        if (saved) notify("AI suggestion applied to the request");
                       }}
                       className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
                     >
                       <Check className="h-4 w-4" />
-                      Apply to request
+                      {mutation.pending ? "Saving…" : "Approve suggested next action"}
                     </button>
                     <span className="text-xs text-muted-foreground">
                       Generated {formatWhen(d.ai.updatedAt)}. Nothing changes until you apply it.
@@ -587,6 +737,7 @@ function Detail() {
                       : "Generate a summary and a recommended next step."}
                 </p>
               )}
+              {actionContext === "ai" && mutation.error && <ErrorState message={mutation.error} />}
               {aiError ? <p className="mt-2 text-xs text-destructive">{aiError}</p> : null}
             </div>
 
@@ -594,6 +745,7 @@ function Detail() {
               <div className="flex items-center justify-between">
                 <h2 className="font-semibold">People involved</h2>
                 <button
+                  disabled={mutation.pending}
                   onClick={() => setAdding((v) => !v)}
                   className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
                 >
@@ -607,6 +759,7 @@ function Detail() {
                   className="space-y-2 rounded-lg border bg-card p-3 shadow-card"
                 >
                   <select
+                    disabled={mutation.pending}
                     value={person.role}
                     onChange={(e) => setPerson({ ...person, role: e.target.value as Role })}
                     className="h-9 w-full rounded-md border bg-background px-2 text-sm"
@@ -617,6 +770,7 @@ function Detail() {
                     ))}
                   </select>
                   <input
+                    disabled={mutation.pending}
                     required
                     value={person.name}
                     onChange={(e) => setPerson({ ...person, name: e.target.value })}
@@ -625,6 +779,7 @@ function Detail() {
                     className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
                   />
                   <input
+                    disabled={mutation.pending}
                     required
                     type="email"
                     value={person.email}
@@ -633,8 +788,16 @@ function Detail() {
                     aria-label="Email"
                     className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
                   />
-                  <button className="w-full rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground">
-                    Add person
+                  {actionContext === "person" && mutation.error && (
+                    <ErrorState message={mutation.error} />
+                  )}
+                  <button
+                    disabled={mutation.pending}
+                    className="w-full rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground"
+                  >
+                    {mutation.pending && actionContext === "person"
+                      ? "Saving person…"
+                      : "Add person"}
                   </button>
                 </form>
               ) : null}
@@ -669,10 +832,19 @@ function Detail() {
                           </div>
                         </div>
                         <button
+                          disabled={mutation.pending}
                           onClick={() =>
-                            void removeParticipant({
-                              data: { requestId: r.id, email: p.email },
-                            }).then(refresh)
+                            void perform(
+                              "general",
+                              async () => {
+                                await removeParticipant({
+                                  data: { requestId: r.id, email: p.email },
+                                });
+                                await refresh();
+                                notify("Person removed");
+                              },
+                              "Could not remove this person. Please refresh and try again.",
+                            )
                           }
                           className="rounded p-1 text-muted-foreground hover:bg-muted"
                           aria-label={`Remove ${p.name}`}
@@ -688,7 +860,7 @@ function Detail() {
                 <span
                   className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${roleTone["Property Manager"]}`}
                 >
-                  Property Manager
+                  Your account
                 </span>
                 <div className="mt-2 flex items-center gap-3">
                   <div className="grid h-8 w-8 place-items-center rounded-full bg-muted text-xs font-semibold">
@@ -716,10 +888,17 @@ function Detail() {
                       {formatWhen(m.receivedAt)}
                     </div>
                     <button
+                      disabled={mutation.pending}
                       onClick={() =>
-                        void linkEmail({ data: { emailId: m.id, requestId: r.id } })
-                          .then(refresh)
-                          .then(() => notify("Email linked to this request"))
+                        void perform(
+                          "general",
+                          async () => {
+                            await linkEmail({ data: { emailId: m.id, requestId: r.id } });
+                            await refresh();
+                            notify("Email linked to this request");
+                          },
+                          "Could not link this email. Please try again.",
+                        )
                       }
                       className="mt-2 rounded border px-2 py-1 text-xs hover:bg-muted"
                     >
@@ -737,6 +916,7 @@ function Detail() {
                   Quotes
                 </h2>
                 <button
+                  disabled={mutation.pending}
                   onClick={() => setQuoteOpen((v) => !v)}
                   className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
                 >
@@ -750,6 +930,7 @@ function Detail() {
                   className="mb-4 grid gap-2 rounded-md bg-muted p-3 sm:grid-cols-[1fr_8rem]"
                 >
                   <input
+                    disabled={mutation.pending}
                     required
                     value={quoteForm.supplier}
                     onChange={(e) => setQuoteForm({ ...quoteForm, supplier: e.target.value })}
@@ -758,6 +939,7 @@ function Detail() {
                     className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
                   />
                   <input
+                    disabled={mutation.pending}
                     required
                     type="number"
                     min="1"
@@ -769,17 +951,30 @@ function Detail() {
                     className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
                   />
                   <input
+                    disabled={mutation.pending}
                     value={quoteForm.description}
                     onChange={(e) => setQuoteForm({ ...quoteForm, description: e.target.value })}
                     placeholder="What the quote covers (optional)"
                     aria-label="Description"
                     className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring sm:col-span-2"
                   />
-                  <button className="rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground sm:col-span-2">
-                    Save quote
+                  {actionContext === "quote" && mutation.error && (
+                    <ErrorState message={mutation.error} />
+                  )}
+                  <button
+                    disabled={mutation.pending}
+                    className="rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground sm:col-span-2"
+                  >
+                    {mutation.pending && actionContext === "quote" ? "Saving quote…" : "Save quote"}
                   </button>
                 </form>
               ) : null}
+              {actionContext === "decision" && mutation.error && (
+                <ErrorState message={mutation.error} />
+              )}
+              {actionContext === "decision" && mutation.pending && (
+                <PendingLabel>Saving quote decision…</PendingLabel>
+              )}
               {(d?.quotes ?? []).length === 0 ? (
                 <p className="text-sm text-muted-foreground">No quotes recorded yet.</p>
               ) : null}
@@ -802,12 +997,14 @@ function Detail() {
                     {q.status === "Pending" ? (
                       <div className="flex gap-2">
                         <button
+                          disabled={mutation.pending}
                           onClick={() => void decide(q.id, "Approved")}
                           className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
                         >
                           Approve
                         </button>
                         <button
+                          disabled={mutation.pending}
                           onClick={() => void decide(q.id, "Rejected")}
                           className="rounded-md border px-3 py-1.5 text-xs"
                         >
@@ -832,6 +1029,7 @@ function Detail() {
                   Appointments
                 </h2>
                 <button
+                  disabled={mutation.pending}
                   onClick={() => setApptOpen((v) => !v)}
                   className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
                 >
@@ -845,6 +1043,7 @@ function Detail() {
                   className="mb-4 grid gap-2 rounded-md bg-muted p-3 sm:grid-cols-2"
                 >
                   <input
+                    disabled={mutation.pending}
                     required
                     value={apptForm.title}
                     onChange={(e) => setApptForm({ ...apptForm, title: e.target.value })}
@@ -853,6 +1052,7 @@ function Detail() {
                     className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring sm:col-span-2"
                   />
                   <input
+                    disabled={mutation.pending}
                     required
                     type="datetime-local"
                     value={apptForm.when}
@@ -861,14 +1061,23 @@ function Detail() {
                     className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
                   />
                   <input
+                    disabled={mutation.pending}
                     value={apptForm.location}
                     onChange={(e) => setApptForm({ ...apptForm, location: e.target.value })}
                     placeholder={r.address}
                     aria-label="Location"
                     className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
                   />
-                  <button className="rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground sm:col-span-2">
-                    Book appointment
+                  {actionContext === "appointment" && mutation.error && (
+                    <ErrorState message={mutation.error} />
+                  )}
+                  <button
+                    disabled={mutation.pending}
+                    className="rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground sm:col-span-2"
+                  >
+                    {mutation.pending && actionContext === "appointment"
+                      ? "Booking…"
+                      : "Book appointment"}
                   </button>
                 </form>
               ) : null}
@@ -886,11 +1095,20 @@ function Detail() {
                       </div>
                     </div>
                     <button
+                      disabled={mutation.pending}
                       onClick={() =>
-                        void deleteAppointment({ data: { id: a.id } }).then(() => {
-                          void queryClient.invalidateQueries({ queryKey: ["appointments"] });
-                          return refresh();
-                        })
+                        void perform(
+                          "general",
+                          async () => {
+                            await deleteAppointment({ data: { id: a.id } });
+                            await Promise.all([
+                              refresh(),
+                              queryClient.invalidateQueries({ queryKey: ["appointments"] }),
+                            ]);
+                            notify("Appointment cancelled");
+                          },
+                          "Could not confirm the appointment was cancelled. Refresh before retrying.",
+                        )
                       }
                       className="rounded p-1 text-muted-foreground hover:bg-muted"
                       aria-label={`Cancel ${a.title}`}
@@ -904,130 +1122,138 @@ function Detail() {
           </div>
         </div>
       </div>
+      {edits.confirmation}
       {reminderOpen ? (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4"
-          role="dialog"
-          aria-modal="true"
+        <FormDialog
+          title="Send email"
+          description="Review the recipient and message before sending from your connected Gmail account."
+          guardNavigation={false}
+          dirty={Boolean(reminder.to || reminder.subject || reminder.body)}
+          busy={mutation.pending}
+          onClose={() => {
+            setReminderOpen(false);
+            setReminder({ to: "", subject: "", body: "" });
+            setMailError("");
+            mutation.clearError();
+          }}
         >
-          <form
-            onSubmit={(e) => void submitReminder(e)}
-            className="w-full max-w-lg rounded-xl border bg-card p-6 shadow-float"
-          >
-            <div className="flex items-center justify-between">
-              <h2 className="font-semibold">Send email</h2>
-              <button type="button" onClick={() => setReminderOpen(false)} className="p-1">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            {!d?.gmailConnected ? (
-              <p className="mt-3 rounded-md bg-muted p-3 text-sm text-muted-foreground">
-                Gmail is not connected yet.{" "}
-                <Link to="/inbox" className="font-medium text-primary">
-                  Connect it in the Inbox
-                </Link>{" "}
-                to send emails from here.
-              </p>
-            ) : null}
-            <div className="mt-4 space-y-3">
-              <input
-                required
-                type="email"
-                list="people-emails"
-                value={reminder.to}
-                onChange={(e) => setReminder({ ...reminder, to: e.target.value })}
-                placeholder="To"
-                aria-label="To"
-                className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
-              />
-              <datalist id="people-emails">
-                {participants.map((p) => (
-                  <option key={p.email} value={p.email}>
-                    {p.name} · {p.role}
-                  </option>
-                ))}
-              </datalist>
-              <input
-                required
-                value={reminder.subject}
-                onChange={(e) => setReminder({ ...reminder, subject: e.target.value })}
-                placeholder="Subject"
-                aria-label="Subject"
-                className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
-              />
-              <textarea
-                required
-                value={reminder.body}
-                onChange={(e) => setReminder({ ...reminder, body: e.target.value })}
-                aria-label="Message"
-                className="min-h-40 w-full rounded-md border p-3 text-sm outline-none focus:border-ring"
-              />
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setReminderOpen(false)}
-                className="rounded-md border px-4 py-2 text-sm"
-              >
-                Cancel
-              </button>
-              <button
-                disabled={sending || !d?.gmailConnected}
-                className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
-              >
-                <Send className="h-4 w-4" />
-                {sending ? "Sending…" : "Send email"}
-              </button>
-            </div>
-          </form>
-        </div>
+          {({ close }) => (
+            <form onSubmit={(e) => void submitReminder(e)} className="form-stack">
+              {!d?.gmailConnected ? (
+                <p className="mt-3 rounded-md bg-muted p-3 text-sm text-muted-foreground">
+                  Gmail is not connected yet.{" "}
+                  <Link to="/inbox" className="font-medium text-primary">
+                    Connect it in the Inbox
+                  </Link>{" "}
+                  to send emails from here.
+                </p>
+              ) : null}
+              <div className="mt-4 space-y-3">
+                <input
+                  disabled={mutation.pending}
+                  required
+                  type="email"
+                  list="people-emails"
+                  value={reminder.to}
+                  onChange={(e) => setReminder({ ...reminder, to: e.target.value })}
+                  placeholder="To"
+                  aria-label="To"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
+                />
+                <datalist id="people-emails">
+                  {participants.map((p) => (
+                    <option key={p.email} value={p.email}>
+                      {p.name} · {p.role}
+                    </option>
+                  ))}
+                </datalist>
+                <input
+                  disabled={mutation.pending}
+                  required
+                  value={reminder.subject}
+                  onChange={(e) => setReminder({ ...reminder, subject: e.target.value })}
+                  placeholder="Subject"
+                  aria-label="Subject"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
+                />
+                <textarea
+                  disabled={mutation.pending}
+                  required
+                  value={reminder.body}
+                  onChange={(e) => setReminder({ ...reminder, body: e.target.value })}
+                  aria-label="Message"
+                  className="min-h-40 w-full rounded-md border p-3 text-sm outline-none focus:border-ring"
+                />
+              </div>
+              {(mailError || mutation.error) && (
+                <ErrorState message={mailError || mutation.error} />
+              )}
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  disabled={mutation.pending}
+                  type="button"
+                  onClick={close}
+                  className="rounded-md border px-4 py-2 text-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  disabled={sending || mutation.pending || !d?.gmailConnected}
+                  className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
+                >
+                  <Send className="h-4 w-4" />
+                  {sending ? "Sending…" : "Send email"}
+                </button>
+              </div>
+            </form>
+          )}
+        </FormDialog>
       ) : null}
       {noteOpen ? (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4"
-          role="dialog"
-          aria-modal="true"
+        <FormDialog
+          title="Add internal note"
+          description="Record a call, decision or follow-up for this repair."
+          guardNavigation={false}
+          dirty={Boolean(note)}
+          busy={mutation.pending}
+          onClose={() => {
+            setNoteOpen(false);
+            setNote("");
+            mutation.clearError();
+          }}
         >
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!note.trim()) return;
-              void addNote({ data: { requestId: r.id, text: note.trim() } })
-                .then(refresh)
-                .then(() => notify("Timeline note added"));
-              setNote("");
-              setNoteOpen(false);
-            }}
-            className="w-full max-w-md rounded-xl border bg-card p-6 shadow-float"
-          >
-            <div className="flex items-center justify-between">
-              <h2 className="font-semibold">Add internal note</h2>
-              <button type="button" onClick={() => setNoteOpen(false)} className="p-1">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <textarea
-              autoFocus
-              required
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="Record a call, decision or follow-up…"
-              className="mt-4 min-h-28 w-full rounded-md border p-3 text-sm outline-none focus:border-ring"
-            />
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setNoteOpen(false)}
-                className="rounded-md border px-4 py-2 text-sm"
-              >
-                Cancel
-              </button>
-              <button className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">
-                Add note
-              </button>
-            </div>
-          </form>
-        </div>
+          {({ close }) => (
+            <form onSubmit={(e) => void submitNote(e)} className="form-stack">
+              <textarea
+                disabled={mutation.pending}
+                autoFocus
+                required
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                aria-label="Internal note"
+                placeholder="Record a call, decision or follow-up…"
+                className="mt-4 min-h-28 w-full rounded-md border p-3 text-sm outline-none focus:border-ring"
+              />
+              {mutation.error && <ErrorState message={mutation.error} />}
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  disabled={mutation.pending}
+                  type="button"
+                  onClick={close}
+                  className="rounded-md border px-4 py-2 text-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  disabled={mutation.pending}
+                  className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+                >
+                  {mutation.pending ? "Saving note…" : "Add note"}
+                </button>
+              </div>
+            </form>
+          )}
+        </FormDialog>
       ) : null}
     </AppShell>
   );

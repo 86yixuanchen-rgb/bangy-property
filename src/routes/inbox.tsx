@@ -1,4 +1,4 @@
-import { sendEmail } from "@/lib/send-email";
+import { useDiscardGuard } from "@/hooks/use-discard-guard";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -12,75 +12,183 @@ import {
   Trash2,
   PenSquare,
   Undo2,
+  RefreshCw,
+  ShieldAlert,
+  CheckCircle2,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { Button } from "@/components/ui/button";
+import {
+  ErrorState,
+  EmptyState,
+  LoadingRows,
+  StatusLabel,
+  PendingLabel,
+} from "@/components/workspace-ui";
 import { useWorkspace } from "@/lib/workspace";
+import { useAuth } from "@/lib/auth";
 import { disconnectGmail, getInbox, moveEmail, syncGmail } from "@/lib/gmail.functions";
 import { linkEmail } from "@/lib/incidents.functions";
+import { sendEmail } from "@/lib/send-email";
+import { useDebouncedValue, useStoredPreference } from "@/hooks/use-ui-state";
+import type { Priority } from "@/lib/data";
 
 export const Route = createFileRoute("/inbox")({
   head: () => ({
     meta: [
-      { title: "Unified Inbox — RepairFlow" },
-      {
-        name: "description",
-        content: "Your Gmail inbox organised around repair requests.",
-      },
+      { title: "Inbox — RepairFlow" },
+      { name: "description", content: "Review repair emails and coordinate the next action." },
     ],
   }),
   component: InboxPage,
 });
-
-function formatTime(ms: number) {
-  const d = new Date(ms);
-  return d.toDateString() === new Date().toDateString()
-    ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-    : d.toLocaleDateString([], { day: "numeric", month: "short" });
+const time = (ms: number) =>
+  new Date(ms).toDateString() === new Date().toDateString()
+    ? new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : new Date(ms).toLocaleDateString([], { day: "numeric", month: "short" });
+function savedCreations(value: unknown): Record<string, string> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? Object.fromEntries(
+        Object.entries(value).filter(
+          ([key, id]) => key.length < 500 && typeof id === "string" && /^REQ-\d+$/.test(id),
+        ),
+      )
+    : {};
 }
-
 function InboxPage() {
+  const { user, isSignedIn } = useAuth();
+  const { requests, addRequest, notify } = useWorkspace();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const inbox = useQuery({
+    queryKey: ["inbox"],
+    queryFn: () => getInbox(),
+    staleTime: Infinity,
+    enabled: isSignedIn,
+  });
+  const inboxPermissionError =
+    inbox.error instanceof Error && /unauthorized|forbidden/i.test(inbox.error.message);
+  const connected = inbox.data?.connected === true;
+  const emails = useMemo(() => (inbox.data?.connected ? inbox.data.emails : []), [inbox.data]);
   const [query, setQuery] = useState("");
-  const [readIds, setReadIds] = useState<Set<string>>(new Set());
-  const [selectedId, setSelectedId] = useState("");
-  const [replying, setReplying] = useState(false);
-  const [reply, setReply] = useState("");
-  const [sending, setSending] = useState(false);
-  const [syncing, setSyncing] = useState(false);
+  const debounced = useDebouncedValue(query);
   const [folder, setFolder] = useState<"inbox" | "sent" | "trash">("inbox");
+  const [selectedId, setSelectedId] = useState("");
+  const selected = emails.find((m) => m.id === selectedId);
+  const [readIds, setReadIds] = useState<Set<string>>(new Set());
   const [composing, setComposing] = useState(false);
   const [to, setTo] = useState("");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [requestId, setRequestId] = useState("");
-  const [moving, setMoving] = useState(false);
+  const [replying, setReplying] = useState(false);
+  const [reply, setReply] = useState("");
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftAddress, setDraftAddress] = useState("");
+  const [draftPriority, setDraftPriority] = useState<Priority>("Medium");
+  const [draftDismissed, setDraftDismissed] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [linking, setLinking] = useState(false);
+  const [linkChoice, setLinkChoice] = useState("");
   const [reconnect, setReconnect] = useState(false);
-  const { requests, addRequest, notify } = useWorkspace();
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const inbox = useQuery({ queryKey: ["inbox"], queryFn: () => getInbox(), staleTime: Infinity });
-  const connected = inbox.data?.connected === true;
-  const emails = useMemo(() => (inbox.data?.connected ? inbox.data.emails : []), [inbox.data]);
-  const selected = emails.find((m) => m.id === selectedId);
-
+  const [error, setError] = useState("");
+  const locks = useRef({ send: false, create: false, move: false, sync: false, link: false });
+  const mailbox = inbox.data?.connected ? inbox.data.email : "";
+  const [createdByEmail, setCreatedByEmail] = useStoredPreference(
+    user?.email && mailbox ? `repairflow.pending-email-repairs.v1:${user.email}:${mailbox}` : null,
+    {} as Record<string, string>,
+    savedCreations,
+    "sessionStorage",
+  );
+  const createdRef = useRef(createdByEmail);
+  createdRef.current = createdByEmail;
+  const pendingId = selected ? createdByEmail[selected.id] : undefined;
+  const reviewDirty = Boolean(
+    selected &&
+    !selected.requestId &&
+    !pendingId &&
+    (draftAddress || draftPriority !== "Medium" || draftTitle !== selected.subject.slice(0, 200)),
+  );
+  const guard = useDiscardGuard(
+    Boolean(
+      (composing && (to || subject || body || requestId)) || (replying && reply) || reviewDirty,
+    ),
+    sending || creating || moving || linking,
+  );
+  const list = useMemo(
+    () =>
+      emails
+        .filter((m) =>
+          folder === "trash" ? m.trashed : !m.trashed && (folder === "sent" ? m.sent : m.inInbox),
+        )
+        .filter(
+          (m) =>
+            ![m.fromName, m.fromEmail, m.toEmails, m.subject, m.snippet].every(
+              (value) =>
+                !value.toLowerCase().includes((query ? debounced : "").trim().toLowerCase()),
+            ),
+        ),
+    [emails, folder, query, debounced],
+  );
+  const linkedRequest = selected?.requestId
+    ? requests.find((r) => r.id === selected.requestId)
+    : undefined;
+  const refresh = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["inbox"] }),
+      queryClient.invalidateQueries({ queryKey: ["incident"] }),
+    ]);
+  const clearCompose = () => {
+    setComposing(false);
+    setTo("");
+    setSubject("");
+    setBody("");
+    setRequestId("");
+  };
+  const choose = (id: string) => {
+    if (id === selectedId && !composing) return;
+    guard.confirm(() => {
+      clearCompose();
+      setSelectedId(id);
+      setReadIds((ids) => new Set(ids).add(id));
+      setReplying(false);
+      setReply("");
+      setDraftTitle(emails.find((m) => m.id === id)?.subject.slice(0, 200) ?? "");
+      setDraftAddress("");
+      setDraftPriority("Medium");
+      setDraftDismissed(false);
+      setLinkChoice("");
+      setError("");
+    });
+  };
   const sync = async () => {
+    if (locks.current.sync) return;
+    locks.current.sync = true;
     setSyncing(true);
+    setError("");
     try {
       const result = await syncGmail();
       if (result.ok) {
         await queryClient.invalidateQueries({ queryKey: ["inbox"] });
         notify(`Synced ${result.count} emails from Gmail`);
-      } else if (result.code === "RECONNECT") {
-        setReconnect(true);
-        notify("Please reconnect Gmail to update mailbox permissions.");
       } else {
-        notify("Gmail sync failed. Please try again.");
+        if (result.code === "RECONNECT") setReconnect(true);
+        setError(
+          result.code === "RECONNECT"
+            ? "Reconnect Gmail to update mailbox permissions."
+            : "Could not sync Gmail. Press Sync to try again.",
+        );
       }
+    } catch {
+      setError("Could not sync Gmail. Check your connection and try again.");
     } finally {
+      locks.current.sync = false;
       setSyncing(false);
     }
   };
-
   const autoSynced = useRef(false);
   useEffect(() => {
     if (connected && !autoSynced.current) {
@@ -88,76 +196,36 @@ function InboxPage() {
       void sync();
     }
   }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps
-
   useEffect(() => {
     const status = new URLSearchParams(window.location.search).get("gmail");
     if (!status) return;
     if (status === "connected") notify("Gmail connected");
-    else if (status === "denied") notify("Gmail connection was cancelled");
-    else if (status === "different-account")
-      notify(
-        "Your current mailbox is still connected. Disconnect it before connecting a different Gmail account.",
+    else
+      setError(
+        status === "denied"
+          ? "Gmail connection was cancelled."
+          : status === "different-account"
+            ? "Disconnect the current mailbox before connecting a different Gmail account."
+            : "Gmail connection failed. Please try again.",
       );
-    else notify("Gmail connection failed. Please try again.");
     window.history.replaceState(null, "", "/inbox");
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    setReplying(false);
-    setReply("");
-  }, [selectedId]);
-
-  const list = useMemo(() => {
-    const q = query.toLowerCase();
-    return emails
-      .filter((m) =>
-        folder === "trash" ? m.trashed : !m.trashed && (folder === "sent" ? m.sent : m.inInbox),
-      )
-      .filter((m) =>
-        [m.fromName, m.fromEmail, m.toEmails, m.subject, m.snippet].some((v) =>
-          v.toLowerCase().includes(q),
-        ),
-      );
-  }, [emails, query, folder]);
-
-  const linkedRequest = selected?.requestId
-    ? requests.find((r) => r.id === selected.requestId)
-    : undefined;
-
-  const choose = (id: string) => {
-    setComposing(false);
-    setSelectedId(id);
-    setReadIds((ids) => new Set(ids).add(id));
+  const sendFailure = (code: string) => {
+    if (code === "RECONNECT") setReconnect(true);
+    setError(
+      code === "UNCERTAIN"
+        ? "Delivery is not confirmed. Check Gmail Sent. Retrying the same draft safely checks the result; do not create a replacement message."
+        : code === "RECONNECT"
+          ? "Reconnect Gmail before sending. Your draft has been kept."
+          : "Could not send this email. Your draft has been kept; please try again.",
+    );
   };
-
-  const moveSelected = async () => {
-    if (!selected || moving) return;
-    setMoving(true);
-    try {
-      const result = await moveEmail({ data: { id: selected.id, trash: !selected.trashed } });
-      if (result.ok) {
-        notify(selected.trashed ? "Email restored" : "Email moved to Trash");
-        setSelectedId("");
-        await refreshLinks();
-      } else {
-        if (result.code === "RECONNECT") setReconnect(true);
-        notify(
-          result.code === "RECONNECT"
-            ? "Reconnect Gmail to allow deleting and restoring emails."
-            : "Could not move email. Please try again.",
-        );
-      }
-    } catch {
-      notify("Could not move email. Please try again.");
-    } finally {
-      setMoving(false);
-    }
-  };
-
-  const submitCompose = async (event: React.FormEvent) => {
+  const composeSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (sending) return;
+    if (locks.current.send) return;
+    locks.current.send = true;
     setSending(true);
+    setError("");
     try {
       const result = await sendEmail({
         data: {
@@ -168,36 +236,27 @@ function InboxPage() {
         },
       });
       if (result.ok) {
-        notify("Email sent");
-        setComposing(false);
-        setTo("");
-        setSubject("");
-        setBody("");
-        setRequestId("");
-        setFolder("sent");
-        setSelectedId("");
-        await refreshLinks();
-      } else {
-        if (result.code === "RECONNECT") setReconnect(true);
-        notify(
-          result.code === "RECONNECT"
-            ? "Reconnect Gmail before sending."
-            : result.code === "UNCERTAIN"
-              ? "Delivery is not confirmed. Check Gmail Sent; retrying this draft will check the result without resending."
-              : "Could not send email. Your draft is still here.",
-        );
-      }
+        guard.complete(() => {
+          clearCompose();
+          setFolder("sent");
+          setSelectedId("");
+          notify("Email sent");
+        });
+        await refresh();
+      } else sendFailure(result.code);
     } catch {
-      notify("Could not send email. Your draft is still here.");
+      setError("Could not confirm delivery. Keep this draft and retry to check the result.");
     } finally {
+      locks.current.send = false;
       setSending(false);
     }
   };
-
-  const submitReply = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selected || !reply.trim()) return;
+  const replySubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selected || locks.current.send || !reply.trim()) return;
+    locks.current.send = true;
     setSending(true);
+    setError("");
     try {
       const result = await sendEmail({
         data: {
@@ -209,402 +268,658 @@ function InboxPage() {
         },
       });
       if (result.ok) {
-        notify(`Reply sent to ${selected.fromName}`);
-        setReplying(false);
-        setReply("");
-        await queryClient.invalidateQueries({ queryKey: ["inbox"] });
-        await queryClient.invalidateQueries({ queryKey: ["incident"] });
-      } else if (result.code === "RECONNECT") {
-        notify("Gmail needs to be reconnected to send emails.");
-      } else if (result.code === "UNCERTAIN") {
-        notify(
-          "Delivery is not confirmed. Check Gmail Sent; retrying will safely check the result.",
-        );
-      } else {
-        notify("The reply could not be sent. Please try again.");
-      }
+        guard.complete(() => {
+          setReplying(false);
+          setReply("");
+          notify(`Reply sent to ${selected.fromName}`);
+        });
+        await refresh();
+      } else sendFailure(result.code);
+    } catch {
+      setError("Could not confirm delivery. Keep this reply and retry to check the result.");
     } finally {
+      locks.current.send = false;
       setSending(false);
     }
   };
-
-  const refreshLinks = async () => {
-    await queryClient.invalidateQueries({ queryKey: ["inbox"] });
-    await queryClient.invalidateQueries({ queryKey: ["incident"] });
+  const moveSelected = async () => {
+    if (!selected || locks.current.move) return;
+    locks.current.move = true;
+    setMoving(true);
+    setError("");
+    try {
+      const result = await moveEmail({ data: { id: selected.id, trash: !selected.trashed } });
+      if (result.ok) {
+        notify(selected.trashed ? "Email restored" : "Email moved to Trash");
+        setSelectedId("");
+        await refresh();
+      } else {
+        if (result.code === "RECONNECT") setReconnect(true);
+        setError(
+          result.code === "RECONNECT"
+            ? "Reconnect Gmail to allow moving mail to Trash."
+            : "Could not move this email. Please try again.",
+        );
+      }
+    } catch {
+      setError("Could not move this email. Please try again.");
+    } finally {
+      locks.current.move = false;
+      setMoving(false);
+    }
   };
-
+  const linkTo = async (id: string | null) => {
+    if (!selected || locks.current.link) return;
+    locks.current.link = true;
+    setLinking(true);
+    setError("");
+    try {
+      await linkEmail({ data: { emailId: selected.id, requestId: id } });
+      await refresh();
+      notify(id ? `Email linked to ${id}` : "Email unlinked");
+    } catch {
+      setError("Could not link this email. Your selection has been kept; try again.");
+    } finally {
+      locks.current.link = false;
+      setLinking(false);
+    }
+  };
+  const approveDraft = async () => {
+    if (!selected || locks.current.create || (!pendingId && !draftTitle.trim())) return;
+    locks.current.create = true;
+    setCreating(true);
+    setError("");
+    let id = createdRef.current[selected.id];
+    try {
+      if (!id) {
+        const created = await addRequest({
+          title: draftTitle.trim(),
+          address: draftAddress.trim() || "Address to be confirmed",
+          priority: draftPriority,
+        });
+        id = created.id;
+        createdRef.current = { ...createdRef.current, [selected.id]: id };
+        setCreatedByEmail(createdRef.current);
+      }
+      await linkEmail({ data: { emailId: selected.id, requestId: id } });
+      const next = { ...createdRef.current };
+      delete next[selected.id];
+      createdRef.current = next;
+      setCreatedByEmail(next);
+      await refresh();
+      const target = id;
+      guard.complete(() => {
+        notify(`${target} created and linked to this email`);
+        void navigate({ to: "/requests/$id", params: { id: target } });
+      });
+    } catch {
+      setError(
+        id
+          ? `${id} was created, but the email link was not confirmed. Retry links this existing repair instead of creating another.`
+          : "Could not confirm repair creation. Your draft has been kept. Check the repair list before retrying.",
+      );
+    } finally {
+      locks.current.create = false;
+      setCreating(false);
+    }
+  };
+  const disconnect = async () => {
+    if (locks.current.link) return;
+    locks.current.link = true;
+    setLinking(true);
+    setError("");
+    try {
+      await disconnectGmail();
+      setSelectedId("");
+      await refresh();
+      notify("Gmail disconnected");
+    } catch {
+      setError("Could not disconnect Gmail. Please try again.");
+    } finally {
+      locks.current.link = false;
+      setLinking(false);
+    }
+  };
   return (
     <AppShell>
-      <div className="inbox-layout min-h-[calc(100vh-3.5rem)]">
-        <div
-          className={`inbox-list ${selected || composing ? "inbox-list-hidden" : ""} flex-col border-r bg-card`}
+      {guard.confirmation}
+      {error && !composing && !replying && (
+        <div className="inbox-action-feedback">
+          <ErrorState message={error} retry={() => void inbox.refetch()} />
+        </div>
+      )}
+      <div className="inbox-layout">
+        <section
+          className={`inbox-list ${selected || composing ? "inbox-list-hidden" : ""}`}
+          aria-label="Email list"
         >
-          <div className="border-b p-3">
-            <h1 className="mb-2 font-semibold">Unified Inbox</h1>
-            {connected ? (
-              <>
-                <button
-                  onClick={() => {
-                    setSelectedId("");
-                    setComposing(true);
-                  }}
-                  className="mb-3 flex w-full items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground"
+          <div className="border-b">
+            <div className="flex items-center justify-between">
+              <h1>Inbox</h1>
+              {connected && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Compose email"
+                  title="Compose email"
+                  onClick={() =>
+                    guard.confirm(() => {
+                      setSelectedId("");
+                      clearCompose();
+                      setComposing(true);
+                    })
+                  }
                 >
                   <PenSquare className="h-4 w-4" />
-                  Compose
-                </button>
-                <nav aria-label="Mail folders" className="mb-3 flex gap-1">
-                  {(["inbox", "sent", "trash"] as const).map((value) => (
+                </Button>
+              )}
+            </div>
+            {connected && (
+              <>
+                <nav aria-label="Mail folders" className="mail-folders">
+                  {(["inbox", "sent", "trash"] as const).map((f) => (
                     <button
-                      key={value}
-                      aria-pressed={folder === value}
-                      onClick={() => {
-                        setFolder(value);
-                        setSelectedId("");
-                        setComposing(false);
-                      }}
-                      className={`flex-1 rounded-md px-2 py-2 text-xs capitalize ${folder === value ? "bg-primary-soft font-semibold text-primary" : "hover:bg-muted"}`}
+                      key={f}
+                      aria-pressed={folder === f}
+                      onClick={() =>
+                        guard.confirm(() => {
+                          setFolder(f);
+                          setSelectedId("");
+                          clearCompose();
+                          setReplying(false);
+                          setReply("");
+                          setDraftAddress("");
+                          setDraftPriority("Medium");
+                        })
+                      }
                     >
-                      {value === "sent" ? "Sent" : value === "trash" ? "Trash" : "Inbox"}
+                      {f === "inbox" ? "Inbox" : f === "sent" ? "Sent" : "Trash"}
                     </button>
                   ))}
                 </nav>
-                <p className="mb-2 text-[11px] text-muted-foreground">
-                  Sync loads up to 100 recent emails from the last 30 days.
-                </p>
-                <a
-                  href="/api/gmail/connect"
-                  className={`mb-2 block text-xs text-primary ${reconnect ? "rounded border border-primary p-2 font-semibold" : ""}`}
-                >
-                  {reconnect
-                    ? "Reconnect Gmail — mailbox permission required"
-                    : "Update Gmail permissions"}
-                </a>
-              </>
-            ) : null}
-            {inbox.isSuccess && connected ? (
-              <div className="mb-2 flex items-center justify-between gap-2 rounded-md bg-muted px-2 py-1.5 text-[11px] text-muted-foreground">
-                <span className="truncate">Gmail: {inbox.data.email}</span>
-                <span className="flex shrink-0 gap-2">
-                  <button disabled={syncing} onClick={() => void sync()} className="text-primary">
-                    {syncing ? "Syncing…" : "Sync"}
-                  </button>
+                <div className="mailbox-status">
+                  <span title={mailbox}>{mailbox}</span>
                   <button
-                    onClick={() => {
-                      void disconnectGmail().then(() => {
-                        setSelectedId("");
-                        return queryClient.invalidateQueries({ queryKey: ["inbox"] });
-                      });
-                    }}
+                    onClick={() => void sync()}
+                    disabled={syncing}
+                    title="Sync Gmail"
+                    aria-label="Sync Gmail"
                   >
-                    Disconnect
+                    <RefreshCw className={`h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
                   </button>
-                </span>
-              </div>
-            ) : null}
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                </div>
+                <p className="mail-sync-note">Up to 100 emails from the last 30 days.</p>
+                {reconnect && (
+                  <a href="/api/gmail/connect" className="reconnect-notice">
+                    Reconnect Gmail — permission required
+                  </a>
+                )}
+                <details className="mailbox-options">
+                  <summary>Mailbox settings</summary>
+                  <a href="/api/gmail/connect">Update Gmail permissions</a>
+                  <button disabled={linking} onClick={() => guard.confirm(() => void disconnect())}>
+                    Disconnect Gmail
+                  </button>
+                </details>
+              </>
+            )}
+            <label className="inbox-search">
+              <Search className="h-4 w-4" />
               <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
                 aria-label="Search emails"
                 placeholder="Search emails…"
-                className="h-8 w-full rounded-md border bg-muted pl-8 pr-3 text-xs outline-none"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
               />
-            </div>
+            </label>
           </div>
           <div className="flex-1 overflow-y-auto">
-            {list.map((m) => {
-              const unread = m.unread && !readIds.has(m.id);
-              return (
+            {inbox.isPending ? (
+              <LoadingRows label="Loading inbox" />
+            ) : inbox.isError ? (
+              <div className="p-4">
+                <ErrorState
+                  message="Could not load your inbox."
+                  retry={() => void inbox.refetch()}
+                />
+              </div>
+            ) : !connected ? (
+              <EmptyState
+                title="Connect your mailbox"
+                description="Bring tenant, landlord and tradesperson emails into one repair inbox."
+                action={
+                  <Button asChild>
+                    <a href="/api/gmail/connect">
+                      <Mail />
+                      Connect Gmail
+                    </a>
+                  </Button>
+                }
+              />
+            ) : list.length === 0 ? (
+              <EmptyState
+                search={Boolean(query)}
+                title={query ? "No matching emails" : "No emails in this folder"}
+                description={
+                  query
+                    ? "Try another search or clear the search field."
+                    : "Press Sync to check for recent emails."
+                }
+                action={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => (query ? setQuery("") : void sync())}
+                  >
+                    {query ? "Clear search" : syncing ? "Syncing…" : "Sync Gmail"}
+                  </Button>
+                }
+              />
+            ) : (
+              list.map((m) => (
                 <button
                   key={m.id}
+                  className="email-preview"
+                  aria-pressed={selectedId === m.id}
                   onClick={() => choose(m.id)}
-                  aria-pressed={m.id === selected?.id}
-                  className={`w-full border-b px-4 py-3 text-left ${m.id === selected?.id ? "border-l-2 border-l-primary bg-primary-soft" : "hover:bg-muted"}`}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className={`truncate text-sm ${unread ? "font-semibold" : ""}`}>
+                  <div>
+                    <strong
+                      className={m.unread && !readIds.has(m.id) ? "font-semibold" : "font-normal"}
+                    >
                       {folder === "sent" ? `To: ${m.toEmails}` : m.fromName}
-                    </span>
-                    <span className="shrink-0 text-[11px] text-muted-foreground">
-                      {formatTime(m.receivedAt)}
-                    </span>
+                    </strong>
+                    <time dateTime={new Date(m.receivedAt).toISOString()}>
+                      {time(m.receivedAt)}
+                    </time>
                   </div>
-                  <div className="truncate text-xs font-medium">{m.subject}</div>
-                  <div className="truncate text-xs text-muted-foreground">{m.snippet}</div>
-                  <div className="mt-1.5 flex gap-1.5">
-                    <span className="rounded bg-muted px-1.5 font-mono text-[10px] text-muted-foreground">
-                      {m.requestId ?? "Unlinked"}
-                    </span>
-                  </div>
+                  <h2>{m.subject}</h2>
+                  <p>{m.snippet}</p>
+                  <span className="email-repair-label">
+                    {m.requestId ?? "Not linked to a repair"}
+                  </span>
                 </button>
-              );
-            })}
-            {inbox.isSuccess && !connected ? (
-              <div className="p-6 text-center">
-                <InboxIcon className="mx-auto h-8 w-8 text-muted-foreground" />
-                <p className="mt-3 text-sm font-medium">No mailbox connected</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Connect your Gmail to bring tenant, landlord and repair team emails into your
-                  requests.
-                </p>
-                <a
-                  href="/api/gmail/connect"
-                  className="mt-4 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-                >
-                  <Mail className="h-4 w-4" />
-                  Connect Gmail
-                </a>
-              </div>
-            ) : null}
-            {connected && list.length === 0 ? (
-              <div className="p-8 text-center text-sm text-muted-foreground">
-                {emails.length === 0
-                  ? syncing
-                    ? "Fetching your emails…"
-                    : "No emails in this folder. Press Sync to refresh."
-                  : "No emails match your search."}
-              </div>
-            ) : null}
+              ))
+            )}
           </div>
-        </div>
+        </section>
         {composing ? (
-          <div className="min-w-0 flex-1 p-4 sm:p-6">
-            <form
-              onSubmit={(event) => void submitCompose(event)}
-              className="mx-auto max-w-3xl space-y-4 rounded-lg border bg-card p-5"
+          <section className="compose-area">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="inbox-back"
+              onClick={() => guard.confirm(() => clearCompose())}
             >
-              <h2 className="text-xl font-semibold">New email</h2>
-              <label className="block text-sm">
-                To
-                <input
-                  type="email"
-                  required
-                  value={to}
-                  onChange={(event) => setTo(event.target.value)}
-                  className="mt-1 block w-full rounded-md border bg-background p-2"
-                />
-              </label>
-              <label className="block text-sm">
-                Subject
-                <input
-                  required
-                  maxLength={300}
-                  value={subject}
-                  onChange={(event) => setSubject(event.target.value)}
-                  className="mt-1 block w-full rounded-md border bg-background p-2"
-                />
-              </label>
-              <label className="block text-sm">
-                Repair request (optional)
-                <select
-                  value={requestId}
-                  onChange={(event) => setRequestId(event.target.value)}
-                  className="mt-1 block w-full rounded-md border bg-background p-2"
-                >
-                  <option value="">No linked request</option>
-                  {requests.map((request) => (
-                    <option key={request.id} value={request.id}>
-                      {request.id} — {request.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block text-sm">
-                Message
-                <textarea
-                  required
-                  maxLength={20000}
-                  value={body}
-                  onChange={(event) => setBody(event.target.value)}
-                  className="mt-1 block min-h-64 w-full rounded-md border bg-background p-3"
-                />
-              </label>
-              <div className="flex justify-end gap-2">
-                <button
+              <ArrowLeft />
+              Back to inbox
+            </Button>
+            <form
+              className="compose-form surface form-stack"
+              onSubmit={(e) => void composeSubmit(e)}
+            >
+              <h2>New email</h2>
+              <p className="text-sm text-muted-foreground">
+                Sent from your connected Gmail account after you select Send.
+              </p>
+              <fieldset disabled={sending} className="form-stack">
+                <label>
+                  To
+                  <input
+                    type="email"
+                    required
+                    value={to}
+                    onChange={(e) => setTo(e.target.value)}
+                    placeholder="name@example.com"
+                  />
+                </label>
+                <label>
+                  Subject
+                  <input
+                    required
+                    maxLength={998}
+                    value={subject}
+                    onChange={(e) => setSubject(e.target.value)}
+                  />
+                </label>
+                <label>
+                  Repair request
+                  <select value={requestId} onChange={(e) => setRequestId(e.target.value)}>
+                    <option value="">No repair link</option>
+                    {requests.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.id} — {r.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Message
+                  <textarea
+                    required
+                    rows={10}
+                    aria-label="Message"
+                    value={body}
+                    onChange={(e) => setBody(e.target.value)}
+                  />
+                </label>
+              </fieldset>
+              {error && <ErrorState message={error} />}
+              <div className="form-actions">
+                <Button
                   type="button"
+                  variant="outline"
                   disabled={sending}
-                  onClick={() => setComposing(false)}
-                  className="rounded-md border px-4 py-2 text-sm"
+                  onClick={() => guard.confirm(() => clearCompose())}
                 >
                   Close draft
-                </button>
-                <button
-                  disabled={sending || !to.trim() || !subject.trim() || !body.trim()}
-                  className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground disabled:opacity-50"
-                >
-                  <Send className="h-4 w-4" />
-                  {sending ? "Sending…" : "Send email"}
-                </button>
+                </Button>
+                <Button disabled={sending || !to.trim() || !subject.trim() || !body.trim()}>
+                  {sending ? (
+                    <PendingLabel>Sending…</PendingLabel>
+                  ) : (
+                    <>
+                      <Send />
+                      Send email
+                    </>
+                  )}
+                </Button>
               </div>
             </form>
-          </div>
+          </section>
         ) : selected ? (
           <section className="inbox-detail" aria-label="Selected email">
-            <div className="inbox-message min-w-0 p-4 sm:p-6">
-              <button
-                onClick={() => setSelectedId("")}
-                className="inbox-back mb-3 flex items-center gap-1 text-sm text-muted-foreground"
+            <div className="inbox-message p-4 sm:p-6">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="inbox-back mb-3"
+                onClick={() =>
+                  guard.confirm(() => {
+                    setSelectedId("");
+                    setReplying(false);
+                    setReply("");
+                    setDraftAddress("");
+                    setDraftPriority("Medium");
+                  })
+                }
               >
-                <ArrowLeft className="h-4 w-4" />
+                <ArrowLeft />
                 Back to messages
-              </button>
-              <div className="conversation-content bg-card p-5 sm:p-6">
+              </Button>
+              <article className="conversation-content">
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Mail className="h-3.5 w-3.5" />
-                  Email · {new Date(selected.receivedAt).toLocaleString()}
+                  Original email · {new Date(selected.receivedAt).toLocaleString()}
                 </div>
-                <h2 className="mt-2 break-words text-xl font-semibold">{selected.subject}</h2>
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
-                  <span className="break-all">To: {selected.toEmails}</span>
-                  <button
+                <h2 className="mt-3 break-words">{selected.subject}</h2>
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                  <span className="text-xs text-muted-foreground break-all">
+                    To: {selected.toEmails}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     disabled={moving}
-                    onClick={() => void moveSelected()}
-                    className="flex shrink-0 items-center gap-1 rounded-md border px-3 py-2 text-foreground disabled:opacity-50"
+                    onClick={() => guard.confirm(() => void moveSelected())}
                   >
-                    {selected.trashed ? (
-                      <Undo2 className="h-4 w-4" />
-                    ) : (
-                      <Trash2 className="h-4 w-4" />
-                    )}
+                    {selected.trashed ? <Undo2 /> : <Trash2 />}
                     {moving ? "Moving…" : selected.trashed ? "Restore" : "Move to Trash"}
-                  </button>
+                  </Button>
                 </div>
-                <div className="mt-3 flex items-center gap-3 border-b pb-4">
-                  <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">
+                <div className="email-sender">
+                  <span>
                     {selected.fromName
                       .split(" ")
-                      .map((x) => x[0])
+                      .map((w) => w[0])
                       .join("")
-                      .slice(0, 2)
-                      .toUpperCase()}
-                  </div>
-                  <div className="min-w-0 break-words text-sm">
-                    <div className="font-medium">{selected.fromName}</div>
-                    <div className="text-xs text-muted-foreground">{selected.fromEmail}</div>
+                      .slice(0, 2)}
+                  </span>
+                  <div>
+                    <strong>{selected.fromName}</strong>
+                    <small>{selected.fromEmail}</small>
                   </div>
                 </div>
-                <p className="whitespace-pre-wrap break-words py-6 text-[15px]">{selected.body}</p>
-                {selected.trashed || selected.sent ? null : replying ? (
-                  <form onSubmit={(e) => void submitReply(e)}>
-                    <textarea
-                      autoFocus
-                      value={reply}
-                      onChange={(e) => setReply(e.target.value)}
-                      placeholder={`Reply to ${selected.fromName}…`}
-                      className="min-h-28 w-full rounded-md border p-3 text-sm outline-none focus:border-ring"
-                    />
-                    <div className="mt-2 flex justify-end gap-2">
-                      <button
+                <p className="whitespace-pre-wrap break-words py-6">{selected.body}</p>
+                {replying ? (
+                  <form onSubmit={(e) => void replySubmit(e)} className="reply-form">
+                    <label className="text-sm font-medium">
+                      Reply to {selected.fromName}
+                      <textarea
+                        aria-label="Reply message"
+                        autoFocus
+                        required
+                        disabled={sending}
+                        rows={6}
+                        value={reply}
+                        onChange={(e) => setReply(e.target.value)}
+                        className="mt-2 block w-full"
+                      />
+                    </label>
+                    {error && <ErrorState message={error} />}
+                    <div className="form-actions">
+                      <Button
+                        variant="outline"
                         type="button"
-                        onClick={() => setReplying(false)}
-                        className="rounded-md border px-3 py-2 text-sm"
+                        disabled={sending}
+                        onClick={() =>
+                          guard.confirm(() => {
+                            setReplying(false);
+                            setReply("");
+                          })
+                        }
                       >
-                        Cancel
-                      </button>
-                      <button
-                        disabled={sending || !reply.trim()}
-                        className="flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-60"
-                      >
-                        <Send className="h-4 w-4" />
-                        {sending ? "Sending…" : "Send reply"}
-                      </button>
+                        Cancel reply
+                      </Button>
+                      <Button disabled={sending || !reply.trim()}>
+                        {sending ? (
+                          <PendingLabel>Sending…</PendingLabel>
+                        ) : (
+                          <>
+                            <Send />
+                            Send reply
+                          </>
+                        )}
+                      </Button>
                     </div>
                   </form>
                 ) : (
-                  <button
-                    onClick={() => setReplying(true)}
-                    className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setError("");
+                      setReplying(true);
+                    }}
                   >
-                    <Reply className="h-4 w-4" />
+                    <Reply />
                     Reply
-                  </button>
+                  </Button>
                 )}
-              </div>
+              </article>
             </div>
-            <aside className="inbox-request min-w-0 border-t bg-sidebar p-5">
-              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Repair request
+            <aside className="inbox-request border-t p-5" aria-label="Repair review">
+              <div className="draft-heading">
+                Repair review
+                <span className="draft-label">
+                  {selected.requestId ? "Linked" : "Review needed"}
+                </span>
               </div>
               {selected.requestId ? (
-                <div className="mt-3 space-y-3 text-sm">
+                <div className="draft-form">
+                  <span className="inline-flex items-center gap-2 text-xs text-done">
+                    <CheckCircle2 className="h-4 w-4" />
+                    Linked repair record
+                  </span>
                   <Link
+                    className="font-medium text-primary text-sm"
                     to="/requests/$id"
                     params={{ id: selected.requestId }}
-                    className="font-medium text-primary hover:underline"
                   >
                     {selected.requestId}
                     {linkedRequest ? ` — ${linkedRequest.title}` : ""}
                   </Link>
-                  {linkedRequest ? (
+                  {linkedRequest && (
                     <>
                       <div>
-                        <div className="text-xs text-muted-foreground">Stage</div>
-                        {linkedRequest.column} · {linkedRequest.status}
+                        <span className="draft-note">Property</span>
+                        <p className="text-sm mt-1">{linkedRequest.address}</p>
+                      </div>
+                      <StatusLabel status={linkedRequest.column} />
+                      <div>
+                        <span className="draft-note">Next to act</span>
+                        <p className="text-sm mt-1">{linkedRequest.waitingOn}</p>
                       </div>
                       <div>
-                        <div className="text-xs text-muted-foreground">Next action</div>
-                        {linkedRequest.nextAction}
+                        <span className="draft-note">Current next action</span>
+                        <p className="text-sm mt-1">{linkedRequest.nextAction}</p>
                       </div>
                     </>
-                  ) : null}
-                  <button
-                    onClick={() =>
-                      void linkEmail({ data: { emailId: selected.id, requestId: null } })
-                        .then(refreshLinks)
-                        .then(() => notify("Email unlinked"))
-                    }
-                    className="rounded border px-2 py-1 text-xs hover:bg-muted"
+                  )}
+                  <Button asChild variant="outline" size="sm">
+                    <Link to="/requests/$id" params={{ id: selected.requestId }}>
+                      Open repair & AI review
+                    </Link>
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={linking}
+                    onClick={() => void linkTo(null)}
                   >
-                    Unlink from {selected.requestId}
-                  </button>
+                    Unlink email
+                  </Button>
+                </div>
+              ) : pendingId ? (
+                <div className="draft-form">
+                  <p className="text-sm">
+                    Repair{" "}
+                    <Link to="/requests/$id" params={{ id: pendingId }} className="text-primary">
+                      {pendingId}
+                    </Link>{" "}
+                    was created. Its email link needs confirmation.
+                  </p>
+                  <Button disabled={creating} onClick={() => void approveDraft()}>
+                    {creating ? "Linking…" : "Retry linking existing repair"}
+                  </Button>
+                </div>
+              ) : draftDismissed ? (
+                <div className="draft-form">
+                  <p className="draft-note">
+                    Draft review is hidden. Dismissing it takes no additional action.
+                  </p>
+                  <Button variant="outline" onClick={() => setDraftDismissed(false)}>
+                    Review draft
+                  </Button>
                 </div>
               ) : (
-                <div className="mt-3 space-y-4 text-sm">
-                  <p className="text-muted-foreground">
-                    This email is not linked to a request. Choose the right request below when the
-                    conversation or contact matches more than one repair.
+                <form
+                  className="draft-form"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void approveDraft();
+                  }}
+                >
+                  <p className="draft-note">
+                    Email-based draft. These details are not AI-extracted or confirmed until you
+                    review and create the repair.
                   </p>
-                  <button
-                    disabled={creating}
-                    onClick={async () => {
-                      if (creating) return;
-                      setCreating(true);
-                      try {
-                        const created = await addRequest({
-                          title: selected.subject.slice(0, 200),
-                          address: "Address to be confirmed",
-                          priority: "Medium",
-                        });
-                        await linkEmail({ data: { emailId: selected.id, requestId: created.id } });
-                        notify(`${created.id} created from email`);
-                        void navigate({ to: "/requests/$id", params: { id: created.id } });
-                      } catch {
-                        notify("Could not create or link the request. Please try again.");
-                      } finally {
-                        setCreating(false);
-                      }
-                    }}
-                    className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-primary-foreground"
-                  >
-                    Create repair request from this email
-                  </button>
-                  {requests.some((r) => r.column !== "Completed") ? (
-                    <label className="block text-xs text-muted-foreground">
-                      Or link to an existing request
+                  <fieldset disabled={creating} className="form-stack">
+                    <label>
+                      Reported issue
+                      <input
+                        required
+                        maxLength={200}
+                        aria-label="Reported issue"
+                        aria-describedby="draft-source"
+                        value={draftTitle}
+                        onChange={(e) => setDraftTitle(e.target.value)}
+                      />
+                      <span id="draft-source" className="draft-note">
+                        From the original email subject.
+                      </span>
+                    </label>
+                    <label>
+                      Property address
+                      <input
+                        maxLength={300}
+                        placeholder="Confirm the property address"
+                        value={draftAddress}
+                        onChange={(e) => setDraftAddress(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Priority
                       <select
-                        defaultValue=""
-                        onChange={(e) => {
-                          const id = e.target.value;
-                          if (!id) return;
-                          void linkEmail({ data: { emailId: selected.id, requestId: id } })
-                            .then(refreshLinks)
-                            .then(() => notify(`Email linked to ${id}`));
-                        }}
-                        className="mt-1 block h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground"
+                        aria-label="Priority"
+                        value={draftPriority}
+                        onChange={(e) => setDraftPriority(e.target.value as Priority)}
                       >
-                        <option value="">Choose a request…</option>
+                        {["Urgent", "High", "Medium", "Low"].map((p) => (
+                          <option key={p}>{p}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </fieldset>
+                  {!draftAddress.trim() && (
+                    <p className="draft-missing">
+                      Missing information: property address. You can create this repair as “Address
+                      to be confirmed” and complete it during triage.
+                    </p>
+                  )}
+                  <div className="draft-safety">
+                    <strong>
+                      <ShieldAlert className="inline h-3.5 w-3.5 mr-1" />
+                      Safety review required
+                    </strong>
+                    No automated safety assessment is available here. Read the email and follow your
+                    agency’s escalation process.
+                  </div>
+                  <div>
+                    <span className="draft-note">Initial next action</span>
+                    <p className="text-sm mt-1">Review request & assign trade</p>
+                  </div>
+                  <div className="draft-actions">
+                    <Button disabled={creating || !draftTitle.trim()}>
+                      {creating ? (
+                        <PendingLabel>Creating repair…</PendingLabel>
+                      ) : (
+                        "Approve draft & create repair"
+                      )}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={creating}
+                      onClick={() => setDraftDismissed(true)}
+                    >
+                      Dismiss draft
+                    </Button>
+                  </div>
+                  <p className="draft-note">
+                    Creates a repair using the existing workflow. No email is sent and no spending
+                    is authorised.
+                  </p>
+                </form>
+              )}
+              {!selected.requestId &&
+                !pendingId &&
+                !draftDismissed &&
+                requests.some((r) => r.column !== "Completed") && (
+                  <div className="mt-6 border-t pt-4">
+                    <label className="draft-note">
+                      Or link to an existing repair
+                      <select
+                        aria-label="Link to existing repair"
+                        className="mt-2 w-full"
+                        value={linkChoice}
+                        disabled={linking}
+                        onChange={(e) => {
+                          setLinkChoice(e.target.value);
+                          if (e.target.value) void linkTo(e.target.value);
+                        }}
+                      >
+                        <option value="">Choose repair…</option>
                         {requests
                           .filter((r) => r.column !== "Completed")
                           .map((r) => (
@@ -614,17 +929,30 @@ function InboxPage() {
                           ))}
                       </select>
                     </label>
-                  ) : null}
-                </div>
-              )}
-              <p className="mt-6 text-xs text-muted-foreground">
-                Replies are sent from your Gmail account and appear in the request timeline.
-              </p>
+                    {error && linkChoice && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="mt-2"
+                        disabled={linking}
+                        onClick={() => void linkTo(linkChoice)}
+                      >
+                        Retry link
+                      </Button>
+                    )}
+                  </div>
+                )}
             </aside>
           </section>
         ) : (
-          <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-            {connected ? "Select an email to read it." : "Connect Gmail to see your emails here."}
+          <div className="inbox-placeholder">
+            <InboxIcon />
+            <h2>{connected ? "Choose a conversation" : "Your repair conversations, together"}</h2>
+            <p>
+              {connected
+                ? "Read the original email, review repair details, and decide the next step."
+                : "Connect Gmail to review maintenance emails alongside their repair requests."}
+            </p>
           </div>
         )}
       </div>
