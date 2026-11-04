@@ -20,7 +20,7 @@ import {
 } from "@/lib/workspace.functions";
 
 export const Route = createFileRoute("/workspace/$section")({
-  head: ({ params }) => ({ meta: [{ title: `${title(params.section)} — RepairFlow` }] }),
+  head: ({ params }) => ({ meta: [{ title: `${title(params.section)} — Banjg Property` }] }),
   component: WorkspaceSection,
 });
 
