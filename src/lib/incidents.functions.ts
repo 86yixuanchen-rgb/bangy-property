@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { auth } from "@clerk/tanstack-react-start/server";
-import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import {
   appointments,
@@ -157,20 +157,9 @@ export const addParticipant = createServerFn({ method: "POST" })
         ],
         set: { role: data.role, name: data.name },
       });
-    // Pull in earlier emails exchanged with this person.
-    await db
-      .update(emailMessages)
-      .set({ requestId: data.requestId })
-      .where(
-        and(
-          eq(emailMessages.userId, userId),
-          isNull(emailMessages.requestId),
-          or(
-            eq(emailMessages.fromEmail, data.email),
-            sql`instr(',' || ${emailMessages.toEmails} || ',', ${`,${data.email},`}) > 0`,
-          ),
-        ),
-      );
+    // Use the same ambiguity checks as mailbox sync; never sweep a person's mail into one case.
+    const { autoLinkEmails } = await import("./gmail.server");
+    await autoLinkEmails(userId);
     return { ok: true as const };
   });
 

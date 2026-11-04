@@ -1,3 +1,4 @@
+import { sendEmail } from "@/lib/send-email";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -14,7 +15,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { useWorkspace } from "@/lib/workspace";
-import { disconnectGmail, getInbox, moveEmail, sendEmail, syncGmail } from "@/lib/gmail.functions";
+import { disconnectGmail, getInbox, moveEmail, syncGmail } from "@/lib/gmail.functions";
 import { linkEmail } from "@/lib/incidents.functions";
 
 export const Route = createFileRoute("/inbox")({
@@ -52,6 +53,7 @@ function InboxPage() {
   const [body, setBody] = useState("");
   const [requestId, setRequestId] = useState("");
   const [moving, setMoving] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [reconnect, setReconnect] = useState(false);
   const { requests, addRequest, notify } = useWorkspace();
   const queryClient = useQueryClient();
@@ -92,6 +94,10 @@ function InboxPage() {
     if (!status) return;
     if (status === "connected") notify("Gmail connected");
     else if (status === "denied") notify("Gmail connection was cancelled");
+    else if (status === "different-account")
+      notify(
+        "Your current mailbox is still connected. Disconnect it before connecting a different Gmail account.",
+      );
     else notify("Gmail connection failed. Please try again.");
     window.history.replaceState(null, "", "/inbox");
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -176,7 +182,9 @@ function InboxPage() {
         notify(
           result.code === "RECONNECT"
             ? "Reconnect Gmail before sending."
-            : "Could not send email. Your draft is still here.",
+            : result.code === "UNCERTAIN"
+              ? "Delivery is not confirmed. Check Gmail Sent; retrying this draft will check the result without resending."
+              : "Could not send email. Your draft is still here.",
         );
       }
     } catch {
@@ -208,6 +216,10 @@ function InboxPage() {
         await queryClient.invalidateQueries({ queryKey: ["incident"] });
       } else if (result.code === "RECONNECT") {
         notify("Gmail needs to be reconnected to send emails.");
+      } else if (result.code === "UNCERTAIN") {
+        notify(
+          "Delivery is not confirmed. Check Gmail Sent; retrying will safely check the result.",
+        );
       } else {
         notify("The reply could not be sent. Please try again.");
       }
@@ -549,19 +561,28 @@ function InboxPage() {
               ) : (
                 <div className="mt-3 space-y-4 text-sm">
                   <p className="text-muted-foreground">
-                    This email is not linked to a request. Emails are linked automatically when the
-                    sender has been added to a request.
+                    This email is not linked to a request. Choose the right request below when the
+                    conversation or contact matches more than one repair.
                   </p>
                   <button
-                    onClick={() => {
-                      const created = addRequest({
-                        title: selected.subject.slice(0, 200),
-                        address: "Address to be confirmed",
-                        priority: "Medium",
-                      });
-                      void linkEmail({ data: { emailId: selected.id, requestId: created.id } });
-                      notify(`${created.id} created from email`);
-                      void navigate({ to: "/requests/$id", params: { id: created.id } });
+                    disabled={creating}
+                    onClick={async () => {
+                      if (creating) return;
+                      setCreating(true);
+                      try {
+                        const created = await addRequest({
+                          title: selected.subject.slice(0, 200),
+                          address: "Address to be confirmed",
+                          priority: "Medium",
+                        });
+                        await linkEmail({ data: { emailId: selected.id, requestId: created.id } });
+                        notify(`${created.id} created from email`);
+                        void navigate({ to: "/requests/$id", params: { id: created.id } });
+                      } catch {
+                        notify("Could not create or link the request. Please try again.");
+                      } finally {
+                        setCreating(false);
+                      }
                     }}
                     className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-primary-foreground"
                   >

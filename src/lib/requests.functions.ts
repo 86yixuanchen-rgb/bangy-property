@@ -46,28 +46,6 @@ function toRequest(row: Row): RepairRequest {
   };
 }
 
-function toRow(userId: string, r: RepairRequest, sortOrder: number): Row {
-  return {
-    userId,
-    id: r.id,
-    title: r.title,
-    address: r.address,
-    priority: r.priority,
-    boardColumn: r.column,
-    status: r.status,
-    waitingOn: r.waitingOn,
-    nextAction: r.nextAction,
-    waiting: r.waiting,
-    lastUpdate: r.lastUpdate,
-    sortOrder,
-    aiSummary: null,
-    aiNextStep: null,
-    aiColumn: null,
-    aiWaitingOn: null,
-    aiUpdatedAt: null,
-  };
-}
-
 export const listRequests = createServerFn({ method: "GET" }).handler(async () => {
   const userId = await requireUserId();
   const { getDb } = await import("./db.server");
@@ -82,27 +60,13 @@ export const listRequests = createServerFn({ method: "GET" }).handler(async () =
 });
 
 export const createRequest = createServerFn({ method: "POST" })
-  .validator(requestInput)
+  .validator(requestInput.pick({ title: true, address: true, priority: true }))
   .handler(async ({ data }) => {
     const userId = await requireUserId();
     const { getDb } = await import("./db.server");
     const db = await getDb();
-    const existing = await db
-      .select({ sortOrder: repairRequests.sortOrder })
-      .from(repairRequests)
-      .where(eq(repairRequests.userId, userId));
-    // New requests go to the top of the list, matching the in-memory behaviour.
-    const top = Math.min(0, ...existing.map((r) => r.sortOrder));
-    await db.insert(repairRequests).values(toRow(userId, data, top - 1));
-    await db.insert(requestEvents).values({
-      userId,
-      requestId: data.id,
-      at: Date.now(),
-      kind: "created",
-      text: `Request created: ${data.title}`,
-      actor: "Property Manager",
-    });
-    return { ok: true as const };
+    const { createRequestRecord } = await import("./request-create.server");
+    return createRequestRecord(db, userId, data);
   });
 
 export const patchRequest = createServerFn({ method: "POST" })

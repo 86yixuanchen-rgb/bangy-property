@@ -8,7 +8,7 @@ export const Route = createFileRoute("/api/gmail/callback")({
     handlers: {
       GET: async ({ request }) => {
         const { auth } = await import("@clerk/tanstack-react-start/server");
-        const { connectAccount } = await import("@/lib/gmail.server");
+        const { connectAccount, MailboxChangeRequired } = await import("@/lib/gmail.server");
         const url = new URL(request.url);
         const back = (status: string) => redirect(`${url.origin}/inbox?gmail=${status}`);
 
@@ -27,6 +27,7 @@ export const Route = createFileRoute("/api/gmail/callback")({
         try {
           await connectAccount(userId, code, url.origin);
         } catch (error) {
+          if (error instanceof MailboxChangeRequired) return back("different-account");
           console.error("Gmail connect failed", error);
           return back("error");
         }

@@ -104,6 +104,7 @@ export const disconnectGmail = createServerFn({ method: "POST" }).handler(async 
 export const sendEmail = createServerFn({ method: "POST" })
   .validator(
     z.object({
+      operationId: z.string().uuid(),
       to: z.string().trim().toLowerCase().email().max(200),
       subject: z.string().trim().min(1).max(300),
       body: z.string().trim().min(1).max(20000),
@@ -119,6 +120,7 @@ export const sendEmail = createServerFn({ method: "POST" })
     const gmail = await import("./gmail.server");
     try {
       await gmail.sendMail(userId, getRequestUrl().origin, {
+        operationId: data.operationId,
         to: data.to,
         subject: data.subject,
         body: data.body,
@@ -129,6 +131,9 @@ export const sendEmail = createServerFn({ method: "POST" })
     } catch (error) {
       if (error instanceof gmail.ReconnectRequired) {
         return { ok: false as const, code: "RECONNECT" as const };
+      }
+      if (error instanceof gmail.SendUncertain) {
+        return { ok: false as const, code: "UNCERTAIN" as const };
       }
       console.error("Gmail send failed", error);
       return { ok: false as const, code: "ERROR" as const };

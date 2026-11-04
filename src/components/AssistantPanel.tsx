@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Bot, Check, CircleCheck, LoaderCircle, Mail, Send, X } from "lucide-react";
-import { sendEmail } from "@/lib/gmail.functions";
+import { sendEmail } from "@/lib/send-email";
 import { askDeepSeek, type AssistantEmailDraft } from "@/lib/deepseek";
 import { useWorkspace } from "@/lib/workspace";
 
@@ -83,7 +83,9 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
         const message =
           result.code === "RECONNECT"
             ? "Reconnect Gmail in the Unified Inbox before sending."
-            : "The email could not be sent. Please try again.";
+            : result.code === "UNCERTAIN"
+              ? "Delivery is not confirmed. Check Gmail Sent, then retry to check the result safely."
+              : "The email could not be sent. Please try again.";
         updateTurn(turn.id, { sendState: "failed", sendError: message });
       }
     } catch {

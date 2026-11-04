@@ -9,7 +9,11 @@ export type Toast = { id: number; message: string };
 type WorkspaceValue = {
   requests: RepairRequest[];
   loaded: boolean;
-  addRequest: (input: { title: string; address: string; priority: Priority }) => RepairRequest;
+  addRequest: (input: {
+    title: string;
+    address: string;
+    priority: Priority;
+  }) => Promise<RepairRequest>;
   updateRequest: (id: string, patch: Partial<RepairRequest>) => void;
   toasts: Toast[];
   notify: (message: string) => void;
@@ -45,26 +49,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return {
       requests,
       loaded: data !== undefined,
-      addRequest: ({ title, address, priority }) => {
-        const nums = requests.map((item) => Number(item.id.replace("REQ-", "")));
-        const nextNumber = (nums.length ? Math.max(...nums) : 108) + 1;
-        const item: RepairRequest = {
-          id: `REQ-${nextNumber}`,
-          title,
-          address,
-          priority,
-          column: "New",
-          status: "Awaiting triage",
-          waitingOn: "Property Manager",
-          nextAction: "Review request & assign trade",
-          waiting: "Just now",
-          lastUpdate: "Just now",
-        };
+      addRequest: async (input) => {
+        const item = await createRequest({ data: input });
         queryClient.setQueryData<RepairRequest[]>(["requests"], (items) => [
           item,
           ...(items ?? []),
         ]);
-        createRequest({ data: item }).catch(() => rollback("Could not save the new request"));
         return item;
       },
       updateRequest: (id, patch) => {

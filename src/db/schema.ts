@@ -107,3 +107,24 @@ export const appointments = sqliteTable("appointments", {
   startsAt: integer("starts_at").notNull(),
   location: text("location").notNull().default(""),
 });
+
+// IDs are reserved atomically on the server, independently of browser caches.
+export const requestCounters = sqliteTable("request_counters", {
+  userId: text("user_id").primaryKey(),
+  value: integer("value").notNull(),
+});
+
+export const mailSendOperations = sqliteTable(
+  "mail_send_operations",
+  {
+    userId: text("user_id").notNull(),
+    operationId: text("operation_id").notNull(),
+    mailbox: text("mailbox").notNull(),
+    payload: text("payload").notNull(),
+    state: text("state", { enum: ["sending", "sent", "failed"] }).notNull(),
+    messageId: text("message_id"),
+    threadId: text("thread_id"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.operationId] })],
+);

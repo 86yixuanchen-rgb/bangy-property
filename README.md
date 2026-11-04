@@ -34,3 +34,19 @@ npm run dev
 - Tailwind CSS
 - Clerk
 - Cloudflare D1 + Drizzle
+
+## Reliability changes
+
+Before deploying this version, apply the new D1 migration (`0005_reliable_operations.sql`):
+
+```sh
+npx wrangler d1 migrations apply DB --local
+# Apply to the production database before releasing the new Worker:
+npx wrangler d1 migrations apply DB --remote
+```
+
+- Request numbers are reserved on the server. Creation and its timeline entry are saved together before the UI navigates to the request.
+- Email linking prefers an existing conversation or an explicit request ID. Shared contacts and conflicting references stay unlinked for manual review. Existing links are preserved.
+- Connecting a different Gmail address is blocked while a mailbox is connected. Disconnect first; disconnecting removes the cached emails from this app. Reconnecting the same address preserves its cache. Old in-flight mailbox writes are rejected after the connection changes.
+- Each email send has a durable operation ID. Retries of the same draft reuse it, including after a page reload in the same browser tab. If Gmail accepted the email but local saving failed, retrying repairs the local record without sending again. Lost responses are reconciled against Gmail Sent using a stable Message-ID; if delivery cannot be confirmed, the operation stays blocked and the UI asks the user to check Gmail Sent. Do not create a replacement draft until its delivery status is known. Gmail search can take time to reflect a new message.
+- Send-operation records include message content for recovery and are retained in D1. They are scoped to the signed-in user and mailbox.

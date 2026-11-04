@@ -1,5 +1,11 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
-import { emailMessages, gmailAccounts, repairRequests, requestParticipants } from "@/db/schema";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import {
+  emailMessages,
+  gmailAccounts,
+  mailSendOperations,
+  repairRequests,
+  requestParticipants,
+} from "@/db/schema";
 import { getDb } from "./db.server";
 
 export const GMAIL_SCOPES = "openid email https://www.googleapis.com/auth/gmail.modify";
@@ -81,27 +87,40 @@ export async function connectAccount(userId: string, code: string, origin: strin
   const { email } = (await info.json()) as { email: string };
 
   const db = await getDb();
+  const [previous] = await db.select().from(gmailAccounts).where(eq(gmailAccounts.userId, userId));
+  if (previous && previous.email.toLowerCase() !== email.toLowerCase()) {
+    throw new MailboxChangeRequired(
+      "Disconnect the current mailbox before connecting a different account",
+    );
+  }
   const refreshToken = await encrypt(tokens.refresh_token);
-  await db
+  const connected = await db
     .insert(gmailAccounts)
     .values({ userId, email, refreshToken })
-    .onConflictDoUpdate({ target: gmailAccounts.userId, set: { email, refreshToken } });
+    .onConflictDoUpdate({
+      target: gmailAccounts.userId,
+      set: { email, refreshToken },
+      setWhere: sql`lower(${gmailAccounts.email}) = lower(${email})`,
+    })
+    .returning();
+  if (!connected.length)
+    throw new MailboxChangeRequired(
+      "Disconnect the current mailbox before connecting a different account",
+    );
 }
 
 export class ReconnectRequired extends Error {}
+export class MailboxChangeRequired extends Error {}
+export class SendUncertain extends Error {}
 
 // The seeded demo account has no real mailbox: it never calls Google and never sends email.
 export const DEMO_REFRESH_TOKEN = "demo-account";
 
-async function isDemoAccount(userId: string) {
-  const db = await getDb();
-  const [account] = await db.select().from(gmailAccounts).where(eq(gmailAccounts.userId, userId));
-  return account?.refreshToken === DEMO_REFRESH_TOKEN;
-}
-
-async function accessToken(userId: string, origin: string) {
-  const db = await getDb();
-  const [account] = await db.select().from(gmailAccounts).where(eq(gmailAccounts.userId, userId));
+async function accessToken(
+  userId: string,
+  origin: string,
+  account: typeof gmailAccounts.$inferSelect,
+) {
   if (!account) throw new ReconnectRequired("Gmail is not connected");
   const cfg = googleConfig(origin);
   const res = await fetch(GOOGLE_TOKEN_URL(), {
@@ -205,18 +224,49 @@ function parseMessage(userId: string, m: GmailMessage) {
   };
 }
 
+// The account predicate is evaluated in the same SQL statement as the write, so an
+// old in-flight sync/send cannot insert mail after disconnecting or changing accounts.
+async function storeMailboxMessage(
+  db: Awaited<ReturnType<typeof getDb>>,
+  account: typeof gmailAccounts.$inferSelect,
+  row: typeof emailMessages.$inferInsert,
+  labelsOnly: boolean,
+) {
+  const entries = Object.entries(row) as [keyof typeof row, unknown][];
+  const columns = sql.join(
+    entries.map(([key]) => sql.identifier(emailMessages[key].name)),
+    sql`, `,
+  );
+  const values = sql.join(
+    entries.map(([, value]) => sql`${value}`),
+    sql`, `,
+  );
+  const update = labelsOnly
+    ? sql`unread = excluded.unread, in_inbox = excluded.in_inbox, sent = excluded.sent, trashed = excluded.trashed`
+    : sql`id = excluded.id`;
+  const rows = await db.all<{ id: string }>(sql`INSERT INTO email_messages (${columns})
+    SELECT ${values} WHERE EXISTS (SELECT 1 FROM gmail_accounts
+      WHERE user_id = ${account.userId} AND email = ${account.email} AND refresh_token = ${account.refreshToken})
+    ON CONFLICT(user_id, id) DO UPDATE SET ${update} RETURNING id`);
+  if (!rows.length) throw new ReconnectRequired("Mailbox changed while the operation was running");
+}
+
 export async function syncInbox(userId: string, origin: string) {
-  if (await isDemoAccount(userId)) {
-    const db = await getDb();
+  const db = await getDb();
+  const [account] = await db.select().from(gmailAccounts).where(eq(gmailAccounts.userId, userId));
+  if (!account) throw new ReconnectRequired("Gmail is not connected");
+  if (account.refreshToken === DEMO_REFRESH_TOKEN) {
     const stored = await db.select().from(emailMessages).where(eq(emailMessages.userId, userId));
     await db
       .update(gmailAccounts)
       .set({ lastSyncAt: Date.now() })
-      .where(eq(gmailAccounts.userId, userId));
+      .where(
+        and(eq(gmailAccounts.userId, userId), eq(gmailAccounts.refreshToken, account.refreshToken)),
+      );
     await autoLinkEmails(userId);
     return stored.length;
   }
-  const token = await accessToken(userId, origin);
+  const token = await accessToken(userId, origin, account);
   const headers = { Authorization: `Bearer ${token}` };
   const list = await fetch(
     `${GMAIL_API()}/gmail/v1/users/me/messages?maxResults=100&includeSpamTrash=true&q=` +
@@ -235,22 +285,16 @@ export async function syncInbox(userId: string, origin: string) {
     }),
   );
 
-  const db = await getDb();
   for (const m of messages) {
     if (!m) continue;
-    const row = parseMessage(userId, m);
-    await db
-      .insert(emailMessages)
-      .values(row)
-      .onConflictDoUpdate({
-        target: [emailMessages.userId, emailMessages.id],
-        set: { unread: row.unread, inInbox: row.inInbox, sent: row.sent, trashed: row.trashed },
-      });
+    await storeMailboxMessage(db, account, parseMessage(userId, m), true);
   }
   await db
     .update(gmailAccounts)
     .set({ lastSyncAt: Date.now() })
-    .where(eq(gmailAccounts.userId, userId));
+    .where(
+      and(eq(gmailAccounts.userId, userId), eq(gmailAccounts.refreshToken, account.refreshToken)),
+    );
   await autoLinkEmails(userId);
   return messages.filter(Boolean).length;
 }
@@ -264,36 +308,60 @@ export async function autoLinkEmails(userId: string) {
     .select()
     .from(requestParticipants)
     .where(eq(requestParticipants.userId, userId));
-  if (people.length === 0) return;
   const requests = await db
     .select({ id: repairRequests.id, column: repairRequests.boardColumn })
     .from(repairRequests)
     .where(eq(repairRequests.userId, userId))
     .orderBy(desc(repairRequests.sortOrder));
-  const open = new Set(requests.filter((r) => r.column !== "Completed").map((r) => r.id));
-
-  const unlinked = await db
-    .select()
-    .from(emailMessages)
-    .where(and(eq(emailMessages.userId, userId), isNull(emailMessages.requestId)));
-  for (const mail of unlinked) {
+  const valid = new Set(requests.map((r) => r.id));
+  const allMail = await db.select().from(emailMessages).where(eq(emailMessages.userId, userId));
+  const threadLinks = new Map<string, Set<string>>();
+  for (const mail of allMail) {
+    if (mail.requestId && valid.has(mail.requestId)) {
+      const links = threadLinks.get(mail.threadId) ?? new Set<string>();
+      links.add(mail.requestId);
+      threadLinks.set(mail.threadId, links);
+    }
+  }
+  for (const mail of allMail.filter((m) => !m.requestId)) {
+    const thread = threadLinks.get(mail.threadId);
+    const explicitIds = [...`${mail.subject}\n${mail.body}`.matchAll(/\bREQ-\d+\b/g)].map(
+      (m) => m[0],
+    );
+    if (explicitIds.some((id) => !valid.has(id))) continue;
     const addresses = [mail.fromEmail, ...mail.toEmails.split(",")]
       .map((a) => a.trim().toLowerCase())
       .filter((a) => a && a !== own);
-    const matches = people.filter((p) => addresses.includes(p.email.toLowerCase()));
-    const target = matches.find((p) => open.has(p.requestId)) ?? matches[0];
-    if (!target) continue;
+    const participants = new Set(
+      people
+        .filter((p) => addresses.includes(p.email.toLowerCase()))
+        .map((p) => p.requestId)
+        .filter((id) => valid.has(id)),
+    );
+    // Conflicting thread or explicit request references always require human review.
+    const references = new Set([...(thread ?? []), ...explicitIds]);
+    const candidates = references.size ? references : participants;
+    if (candidates.size !== 1) continue;
+    const [requestId] = candidates;
     await db
       .update(emailMessages)
-      .set({ requestId: target.requestId })
-      .where(and(eq(emailMessages.userId, userId), eq(emailMessages.id, mail.id)));
+      .set({ requestId })
+      .where(
+        and(
+          eq(emailMessages.userId, userId),
+          eq(emailMessages.id, mail.id),
+          isNull(emailMessages.requestId),
+        ),
+      );
   }
 }
 
 export async function disconnectAccount(userId: string) {
   const db = await getDb();
-  await db.delete(emailMessages).where(eq(emailMessages.userId, userId));
-  await db.delete(gmailAccounts).where(eq(gmailAccounts.userId, userId));
+  await db.batch([
+    db.delete(emailMessages).where(eq(emailMessages.userId, userId)),
+    db.delete(gmailAccounts).where(eq(gmailAccounts.userId, userId)),
+  ]);
 }
 
 const cleanHeader = (value: string) => value.replace(/[\r\n]+/g, " ").trim();
@@ -301,13 +369,20 @@ const cleanHeader = (value: string) => value.replace(/[\r\n]+/g, " ").trim();
 export async function sendMail(
   userId: string,
   origin: string,
-  input: { to: string; subject: string; body: string; requestId: string | null; threadId?: string },
+  input: {
+    to: string;
+    subject: string;
+    body: string;
+    requestId: string | null;
+    threadId?: string;
+    operationId?: string;
+  },
 ) {
-  const demo = await isDemoAccount(userId);
-  const token = demo ? "" : await accessToken(userId, origin);
   const db = await getDb();
   const [account] = await db.select().from(gmailAccounts).where(eq(gmailAccounts.userId, userId));
   if (!account) throw new ReconnectRequired("Gmail is not connected");
+  const demo = account.refreshToken === DEMO_REFRESH_TOKEN;
+  const token = demo ? "" : await accessToken(userId, origin, account);
 
   if (input.requestId) {
     const [request] = await db
@@ -317,6 +392,78 @@ export async function sendMail(
     if (!request) throw new Error("Repair request not found");
   }
 
+  const operationId = input.operationId ?? crypto.randomUUID();
+  const payload = JSON.stringify({
+    to: input.to,
+    subject: input.subject,
+    body: input.body,
+    requestId: input.requestId,
+    threadId: input.threadId ?? null,
+  });
+  const condition = and(
+    eq(mailSendOperations.userId, userId),
+    eq(mailSendOperations.operationId, operationId),
+  );
+  const claimed = await db
+    .insert(mailSendOperations)
+    .values({
+      userId,
+      operationId,
+      mailbox: account.email.toLowerCase(),
+      payload,
+      state: "sending",
+      createdAt: Date.now(),
+    })
+    .onConflictDoNothing()
+    .returning();
+  let [operation] = await db.select().from(mailSendOperations).where(condition);
+  if (
+    !operation ||
+    operation.payload !== payload ||
+    operation.mailbox !== account.email.toLowerCase()
+  )
+    throw new Error("Send operation does not match this message or mailbox");
+  if (!claimed.length && operation.state === "failed") {
+    const retry = await db
+      .update(mailSendOperations)
+      .set({ state: "sending" })
+      .where(and(condition, eq(mailSendOperations.state, "failed")))
+      .returning();
+    if (!retry.length) throw new SendUncertain("This email is already being processed");
+    operation = retry[0]!;
+  } else if (!claimed.length && operation.state === "sending") {
+    // Search by our stable RFC Message-ID to recover a lost response without replaying the send.
+    if (demo) throw new SendUncertain("This email is already being processed");
+    let recovered: { id: string; threadId?: string } | undefined;
+    try {
+      const response = await fetch(
+        `${GMAIL_API()}/gmail/v1/users/me/messages?q=` +
+          encodeURIComponent(`in:sent rfc822msgid:banjg-${operationId}@mail.banjg.invalid`),
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(15000),
+        },
+      );
+      if (response.ok) {
+        const result = (await response.json()) as {
+          messages?: { id: string; threadId?: string }[];
+        };
+        if (result.messages?.length === 1) recovered = result.messages[0];
+      }
+    } catch {
+      /* Keep the uncertain operation locked; never send it again. */
+    }
+    if (!recovered?.id)
+      throw new SendUncertain(
+        "Delivery is not confirmed. Check Gmail Sent before sending another message.",
+      );
+    const [saved] = await db
+      .update(mailSendOperations)
+      .set({ state: "sent", messageId: recovered.id, threadId: recovered.threadId ?? recovered.id })
+      .where(condition)
+      .returning();
+    operation = saved!;
+  }
   const to = cleanHeader(input.to);
   const subject = cleanHeader(input.subject);
   const encodedSubject = /^[\x20-\x7e]*$/.test(subject)
@@ -324,6 +471,7 @@ export async function sendMail(
     : `=?UTF-8?B?${b64(new TextEncoder().encode(subject))}?=`;
   const bodyB64 = (b64(new TextEncoder().encode(input.body)).match(/.{1,76}/g) ?? []).join("\r\n");
   const mime = [
+    `Message-ID: <banjg-${operationId}@mail.banjg.invalid>`,
     `To: ${to}`,
     `Subject: ${encodedSubject}`,
     "MIME-Version: 1.0",
@@ -338,25 +486,62 @@ export async function sendMail(
     .replace(/=+$/, "");
 
   let sent: { id: string; threadId?: string };
-  if (demo) {
+  if (operation.state === "sent" && operation.messageId) {
     sent = {
-      id: `demo-sent-${Date.now()}`,
-      ...(input.threadId ? { threadId: input.threadId } : {}),
+      id: operation.messageId,
+      ...(operation.threadId ? { threadId: operation.threadId } : {}),
     };
   } else {
-    const res = await fetch(`${GMAIL_API()}/gmail/v1/users/me/messages/send`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ raw, ...(input.threadId ? { threadId: input.threadId } : {}) }),
-    });
-    if (res.status === 403) throw new ReconnectRequired("Gmail send permission is missing");
-    if (!res.ok) throw new Error(`Gmail send failed (${res.status})`);
-    sent = (await res.json()) as { id: string; threadId?: string };
+    if (demo) {
+      sent = {
+        id: `demo-sent-${operationId}`,
+        ...(input.threadId ? { threadId: input.threadId } : {}),
+      };
+    } else {
+      let res: Response;
+      try {
+        res = await fetch(`${GMAIL_API()}/gmail/v1/users/me/messages/send`, {
+          method: "POST",
+          signal: AbortSignal.timeout(30000),
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ raw, ...(input.threadId ? { threadId: input.threadId } : {}) }),
+        });
+      } catch {
+        throw new SendUncertain(
+          "Delivery is not confirmed. Check Gmail Sent before sending another message.",
+        );
+      }
+      if (!res.ok) {
+        // A server failure may happen after delivery; only definite client rejections can be retried.
+        if ([400, 401, 403, 404, 413, 422, 429].includes(res.status)) {
+          await db.update(mailSendOperations).set({ state: "failed" }).where(condition);
+          if (res.status === 401 || res.status === 403)
+            throw new ReconnectRequired("Gmail send permission is missing");
+          throw new Error(`Gmail send failed (${res.status})`);
+        }
+        throw new SendUncertain(
+          "Delivery is not confirmed. Check Gmail Sent before sending another message.",
+        );
+      }
+      try {
+        sent = (await res.json()) as { id: string; threadId?: string };
+        if (!sent.id) throw new Error("Missing message ID");
+      } catch {
+        throw new SendUncertain(
+          "Delivery is not confirmed. Check Gmail Sent before sending another message.",
+        );
+      }
+    }
+    await db
+      .update(mailSendOperations)
+      .set({ state: "sent", messageId: sent.id, threadId: sent.threadId ?? sent.id })
+      .where(condition);
   }
 
-  await db
-    .insert(emailMessages)
-    .values({
+  await storeMailboxMessage(
+    db,
+    account,
+    {
       userId,
       id: sent.id,
       threadId: sent.threadId ?? sent.id,
@@ -366,25 +551,28 @@ export async function sendMail(
       subject,
       snippet: input.body.slice(0, 300),
       body: input.body.slice(0, 20000),
-      receivedAt: Date.now(),
+      receivedAt: operation.createdAt,
       unread: false,
       inInbox: false,
       sent: true,
       trashed: false,
       requestId: input.requestId,
-    })
-    .onConflictDoNothing();
+    },
+    false,
+  );
   if (!input.requestId) await autoLinkEmails(userId);
 }
 
 export async function moveMail(userId: string, origin: string, id: string, trash: boolean) {
   const db = await getDb();
+  const [account] = await db.select().from(gmailAccounts).where(eq(gmailAccounts.userId, userId));
+  if (!account) throw new ReconnectRequired("Gmail is not connected");
   const condition = and(eq(emailMessages.userId, userId), eq(emailMessages.id, id));
   const [mail] = await db.select().from(emailMessages).where(condition);
   if (!mail) throw new Error("Email not found");
   let labels: string[] | undefined;
-  if (!(await isDemoAccount(userId))) {
-    const token = await accessToken(userId, origin);
+  if (account.refreshToken !== DEMO_REFRESH_TOKEN) {
+    const token = await accessToken(userId, origin, account);
     const response = await fetch(
       `${GMAIL_API()}/gmail/v1/users/me/messages/${encodeURIComponent(id)}/${trash ? "trash" : "untrash"}`,
       {
@@ -409,5 +597,11 @@ export async function moveMail(userId: string, origin: string, id: string, trash
           }
         : {}),
     })
-    .where(condition);
+    .where(
+      and(
+        condition,
+        sql`EXISTS (SELECT 1 FROM gmail_accounts WHERE user_id = ${userId}
+      AND email = ${account.email} AND refresh_token = ${account.refreshToken})`,
+      ),
+    );
 }

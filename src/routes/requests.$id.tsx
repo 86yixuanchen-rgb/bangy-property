@@ -33,7 +33,7 @@ import {
   type IncidentEmail,
 } from "@/lib/incidents.functions";
 import { participantRoles } from "@/db/schema";
-import { sendEmail } from "@/lib/gmail.functions";
+import { sendEmail } from "@/lib/send-email";
 import {
   addAppointment,
   addQuote,
@@ -273,6 +273,10 @@ function Detail() {
         notify(`Email sent to ${reminder.to}`);
       } else if (result.code === "RECONNECT") {
         notify("Gmail needs to be connected (or reconnected) in the Inbox before sending.");
+      } else if (result.code === "UNCERTAIN") {
+        notify(
+          "Delivery is not confirmed. Check Gmail Sent; retrying will safely check the result.",
+        );
       } else {
         notify("The email could not be sent. Please try again.");
       }

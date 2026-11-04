@@ -352,8 +352,8 @@ function Dashboard() {
       {newOpen ? (
         <CreateRequest
           onClose={() => setNewOpen(false)}
-          onSubmit={(input) => {
-            const item = addRequest(input);
+          onSubmit={async (input) => {
+            const item = await addRequest(input);
             setNewOpen(false);
             notify(`${item.id} created`);
             navigate({ to: "/requests/$id", params: { id: item.id } });
@@ -369,8 +369,10 @@ function CreateRequest({
   onSubmit,
 }: {
   onClose: () => void;
-  onSubmit: (input: { title: string; address: string; priority: Priority }) => void;
+  onSubmit: (input: { title: string; address: string; priority: Priority }) => Promise<void>;
 }) {
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [title, setTitle] = useState("");
   const [address, setAddress] = useState("");
   const [priority, setPriority] = useState<Priority>("Medium");
@@ -381,9 +383,18 @@ function CreateRequest({
       aria-modal="true"
     >
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
-          onSubmit({ title, address, priority });
+          if (saving) return;
+          setSaving(true);
+          setSaveError("");
+          try {
+            await onSubmit({ title, address, priority });
+          } catch {
+            setSaveError("Could not create the request. Please try again.");
+          } finally {
+            setSaving(false);
+          }
         }}
         className="w-full max-w-lg rounded-xl border bg-card p-6 shadow-float"
       >
@@ -437,11 +448,19 @@ function CreateRequest({
             </select>
           </label>
         </div>
+        {saveError ? (
+          <p role="alert" className="mt-3 text-sm text-destructive">
+            {saveError}
+          </p>
+        ) : null}
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-md border px-4 py-2 text-sm">
             Cancel
           </button>
-          <button className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">
+          <button
+            disabled={saving}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          >
             Create request
           </button>
         </div>

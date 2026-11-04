@@ -302,6 +302,297 @@ describe("Gmail sync, linking and sending", () => {
   });
 });
 
+describe("Reliable operations", () => {
+  const origin = "https://app.test";
+  async function account(userId: string) {
+    await db
+      .insert(schema.gmailAccounts)
+      .values({ userId, email: "pm@agency.test", refreshToken: "demo-account" })
+      .onConflictDoNothing();
+  }
+  async function request(userId: string, id: string) {
+    await db.insert(schema.repairRequests).values({
+      userId,
+      id,
+      title: "Repair",
+      address: "Test",
+      priority: "High",
+      boardColumn: "New",
+      status: "New",
+      waitingOn: "PM",
+      nextAction: "Review",
+      waiting: "",
+      lastUpdate: "",
+      sortOrder: 0,
+    });
+  }
+  async function mail(
+    userId: string,
+    id: string,
+    threadId = id,
+    requestId: string | null = null,
+    subject = "Repair",
+  ) {
+    await db.insert(schema.emailMessages).values({
+      userId,
+      id,
+      threadId,
+      requestId,
+      subject,
+      fromName: "Trade",
+      fromEmail: "trade@example.test",
+      toEmails: "pm@agency.test",
+      body: "Repair update",
+      snippet: "",
+      receivedAt: Date.now(),
+      unread: true,
+    });
+  }
+
+  it("reserves distinct request numbers concurrently above existing records", async () => {
+    const { createRequestRecord } = await import("@/lib/request-create.server");
+    await request("numbers", "REQ-250");
+    const created = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        createRequestRecord(db, "numbers", { title: "New", address: "Test", priority: "High" }),
+      ),
+    );
+    expect(new Set(created.map((r) => r.id)).size).toBe(8);
+    expect(created.every((r) => Number(r.id.slice(4)) > 250)).toBe(true);
+    const events = await db
+      .select()
+      .from(schema.requestEvents)
+      .where(eq(schema.requestEvents.userId, "numbers"));
+    expect(events).toHaveLength(8);
+  });
+
+  it("leaves shared contacts ambiguous but respects a unique thread or explicit request reference", async () => {
+    const gmail = await import("@/lib/gmail.server");
+    const userId = "ambiguous";
+    await account(userId);
+    for (const id of ["REQ-10", "REQ-20"]) {
+      await request(userId, id);
+      await db.insert(schema.requestParticipants).values({
+        userId,
+        requestId: id,
+        role: "Repair Team",
+        name: "Trade",
+        email: "trade@example.test",
+      });
+    }
+    await mail(userId, "ambiguous");
+    await mail(userId, "anchor", "known-thread", "REQ-10");
+    await mail(userId, "thread-reply", "known-thread");
+    await mail(userId, "explicit", "explicit", null, "Update REQ-20");
+    await mail(userId, "conflicting", "known-thread", null, "Update REQ-20");
+    await gmail.autoLinkEmails(userId);
+    const rows = await db
+      .select()
+      .from(schema.emailMessages)
+      .where(eq(schema.emailMessages.userId, userId));
+    const links = Object.fromEntries(rows.map((r) => [r.id, r.requestId]));
+    expect(links).toMatchObject({
+      ambiguous: null,
+      "thread-reply": "REQ-10",
+      explicit: "REQ-20",
+      conflicting: null,
+    });
+  });
+
+  it("can use an existing thread before any participants have been added", async () => {
+    const gmail = await import("@/lib/gmail.server");
+    await account("thread-only");
+    await request("thread-only", "REQ-30");
+    await mail("thread-only", "thread-anchor", "thread-without-people", "REQ-30");
+    await mail("thread-only", "thread-child", "thread-without-people");
+    await gmail.autoLinkEmails("thread-only");
+    const rows = await db
+      .select()
+      .from(schema.emailMessages)
+      .where(
+        and(
+          eq(schema.emailMessages.userId, "thread-only"),
+          eq(schema.emailMessages.id, "thread-child"),
+        ),
+      );
+    expect(rows[0]?.requestId).toBe("REQ-30");
+  });
+
+  it("rejects a different mailbox without changing the account or its existing mail", async () => {
+    const gmail = await import("@/lib/gmail.server");
+    await db
+      .insert(schema.gmailAccounts)
+      .values({ userId: "switch", email: "old@agency.test", refreshToken: "original" });
+    await mail("switch", "old-message");
+    await expect(gmail.connectAccount("switch", "code", origin)).rejects.toBeInstanceOf(
+      gmail.MailboxChangeRequired,
+    );
+    const [stored] = await db
+      .select()
+      .from(schema.gmailAccounts)
+      .where(eq(schema.gmailAccounts.userId, "switch"));
+    expect(stored?.email).toBe("old@agency.test");
+    expect(stored?.refreshToken).toBe("original");
+    const rows = await db
+      .select()
+      .from(schema.emailMessages)
+      .where(eq(schema.emailMessages.userId, "switch"));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("preserves cached mail when reconnecting the same address", async () => {
+    const gmail = await import("@/lib/gmail.server");
+    await gmail.connectAccount("same-address", "code", origin);
+    await mail("same-address", "preserved");
+    await db
+      .update(schema.gmailAccounts)
+      .set({ lastSyncAt: 123 })
+      .where(eq(schema.gmailAccounts.userId, "same-address"));
+    await gmail.connectAccount("same-address", "code", origin);
+    const rows = await db
+      .select()
+      .from(schema.emailMessages)
+      .where(eq(schema.emailMessages.userId, "same-address"));
+    expect(rows).toHaveLength(1);
+    const [stored] = await db
+      .select()
+      .from(schema.gmailAccounts)
+      .where(eq(schema.gmailAccounts.userId, "same-address"));
+    expect(stored?.lastSyncAt).toBe(123);
+  });
+
+  it("permits retry of a definite Gmail rejection using the same operation", async () => {
+    const gmail = await import("@/lib/gmail.server");
+    await gmail.connectAccount("rejected-retry", "code", origin);
+    const input = {
+      to: "trade@example.test",
+      subject: "Repair",
+      body: "Attend",
+      requestId: null,
+      operationId: crypto.randomUUID(),
+    };
+    sendStatus = 403;
+    await expect(gmail.sendMail("rejected-retry", origin, input)).rejects.toBeInstanceOf(
+      gmail.ReconnectRequired,
+    );
+    sendStatus = 200;
+    await gmail.sendMail("rejected-retry", origin, input);
+    expect(sentBodies).toHaveLength(2);
+    const rows = await db
+      .select()
+      .from(schema.emailMessages)
+      .where(eq(schema.emailMessages.userId, "rejected-retry"));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("retries local persistence without sending the message twice", async () => {
+    const gmail = await import("@/lib/gmail.server");
+    await gmail.connectAccount("persist-retry", "code", origin);
+    const input = {
+      to: "trade@example.test",
+      subject: "Repair",
+      body: "Please attend",
+      requestId: null,
+      operationId: crypto.randomUUID(),
+    };
+    const spy = vi
+      .spyOn(db, "all")
+      .mockRejectedValueOnce(new Error("Database temporarily unavailable"));
+    try {
+      await expect(gmail.sendMail("persist-retry", origin, input)).rejects.toThrow(
+        "Database temporarily unavailable",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    await gmail.sendMail("persist-retry", origin, input);
+    expect(sentBodies).toHaveLength(1);
+    const rows = await db
+      .select()
+      .from(schema.emailMessages)
+      .where(eq(schema.emailMessages.userId, "persist-retry"));
+    expect(rows).toHaveLength(1);
+    await expect(
+      gmail.sendMail("persist-retry", origin, { ...input, body: "Changed" }),
+    ).rejects.toThrow("does not match");
+    expect(sentBodies).toHaveLength(1);
+  });
+
+  it("does not let an old sync write mail after the mailbox is disconnected", async () => {
+    const gmail = await import("@/lib/gmail.server");
+    await gmail.connectAccount("in-flight", "code", origin);
+    const original = fetch;
+    let disconnected = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        if (!disconnected && String(url).includes("?format=full")) {
+          disconnected = true;
+          await gmail.disconnectAccount("in-flight");
+          await db
+            .insert(schema.gmailAccounts)
+            .values({ userId: "in-flight", email: "new@agency.test", refreshToken: "new-token" });
+        }
+        return original(url, init);
+      }),
+    );
+    await expect(gmail.syncInbox("in-flight", origin)).rejects.toBeInstanceOf(
+      gmail.ReconnectRequired,
+    );
+    const rows = await db
+      .select()
+      .from(schema.emailMessages)
+      .where(eq(schema.emailMessages.userId, "in-flight"));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("does not resend an uncertain request and recovers it when Gmail confirms delivery", async () => {
+    const gmail = await import("@/lib/gmail.server");
+    await gmail.connectAccount("lost-response", "code", origin);
+    const original = fetch;
+    let sends = 0;
+    let searchable = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        if (String(url).endsWith("/messages/send")) {
+          sends++;
+          throw new Error("Connection lost after delivery");
+        }
+        if (String(url).includes("rfc822msgid"))
+          return new Response(
+            JSON.stringify({
+              messages: searchable ? [{ id: "recovered", threadId: "recovered-thread" }] : [],
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        return original(url, init);
+      }),
+    );
+    const input = {
+      to: "trade@example.test",
+      subject: "Repair",
+      body: "Attend",
+      requestId: null,
+      operationId: crypto.randomUUID(),
+    };
+    await expect(gmail.sendMail("lost-response", origin, input)).rejects.toBeInstanceOf(
+      gmail.SendUncertain,
+    );
+    await expect(gmail.sendMail("lost-response", origin, input)).rejects.toBeInstanceOf(
+      gmail.SendUncertain,
+    );
+    searchable = true;
+    await gmail.sendMail("lost-response", origin, input);
+    expect(sends).toBe(1);
+    const rows = await db
+      .select()
+      .from(schema.emailMessages)
+      .where(eq(schema.emailMessages.userId, "lost-response"));
+    expect(rows[0]?.id).toBe("recovered");
+  });
+});
+
 describe("Demo account", () => {
   const DEMO = "user_demoaccount1";
 
