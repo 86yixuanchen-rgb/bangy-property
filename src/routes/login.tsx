@@ -3,7 +3,7 @@ import { SignIn } from "@clerk/tanstack-react-start";
 import { ShieldCheck } from "lucide-react";
 
 export const Route = createFileRoute("/login")({
-  head: () => ({ meta: [{ title: "Sign in — Banjg Property" }] }),
+  head: () => ({ meta: [{ title: "Sign in — RepairFlow" }] }),
   component: LoginPage,
 });
 
@@ -13,9 +13,9 @@ function LoginPage() {
       <section className="hidden bg-primary p-12 text-primary-foreground lg:flex lg:flex-col lg:justify-between">
         <div className="flex items-center gap-3 font-semibold">
           <span className="grid h-9 w-9 place-items-center rounded-md bg-white text-primary">
-            B
+            R
           </span>
-          Banjg Property
+          RepairFlow
         </div>
         <div className="max-w-xl">
           <h1 className="text-4xl font-semibold leading-tight tracking-tight">
