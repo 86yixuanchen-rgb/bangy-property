@@ -9,7 +9,7 @@ export const Route = createFileRoute("/login")({
 
 function LoginPage() {
   return (
-    <main className="grid min-h-screen lg:grid-cols-[1.05fr_0.95fr]">
+    <main className="login-layout grid min-h-screen">
       <section className="hidden bg-primary p-12 text-primary-foreground lg:flex lg:flex-col lg:justify-between">
         <div className="flex items-center gap-3 font-semibold">
           <span className="grid h-9 w-9 place-items-center rounded-md bg-white text-primary">

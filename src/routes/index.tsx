@@ -122,8 +122,8 @@ function Dashboard() {
   ];
   return (
     <AppShell openAssistantSignal={aiSeed}>
-      <div className="home-dashboard space-y-6 p-4 sm:p-6 lg:p-8">
-        <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="home-dashboard">
+        <div className="home-heading">
           <div>
             <p className="text-sm text-muted-foreground">{dateStr}</p>
             <h1 className="text-2xl font-semibold tracking-tight">
@@ -138,7 +138,7 @@ function Dashboard() {
             Create request
           </button>
         </div>
-        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <div className="home-facts">
           {stats.map((s) => (
             <div
               key={s.label}
@@ -154,215 +154,216 @@ function Dashboard() {
             </div>
           ))}
         </div>
-        {requests.length > 0 ? (
-          <section className="rounded-lg border bg-card p-4 shadow-card sm:p-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="grid h-8 w-8 place-items-center rounded-md bg-ai-soft text-ai">
-                  <Bot className="h-4 w-4" />
-                </div>
-                <div>
-                  <div className="text-xs font-medium uppercase tracking-wide text-ai">
-                    Morning briefing
+        <div className="operations-grid">
+          {requests.length > 0 ? (
+            <section className="home-briefing">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="grid h-8 w-8 place-items-center rounded-md bg-ai-soft text-ai">
+                    <Bot className="h-4 w-4" />
                   </div>
-                  <h2 className="font-semibold">
-                    {attentionAll.length === 0
-                      ? "Nothing needs your attention right now"
-                      : `${attentionAll.length} ${attentionAll.length === 1 ? "request needs" : "requests need"} your attention`}
-                  </h2>
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-ai">
+                      Morning briefing
+                    </div>
+                    <h2 className="font-semibold">
+                      {attentionAll.length === 0
+                        ? "Nothing needs your attention right now"
+                        : `${attentionAll.length} ${attentionAll.length === 1 ? "request needs" : "requests need"} your attention`}
+                    </h2>
+                  </div>
                 </div>
-              </div>
-              <button
-                onClick={() => setAiSeed((v) => v + 1)}
-                className="rounded-md border border-ai/30 bg-ai-soft px-3 py-2 text-sm font-medium text-ai hover:opacity-90"
-              >
-                Ask AI to prioritise my day
-              </button>
-            </div>
-            <div className="mt-4 divide-y rounded-md border">
-              {briefing.map((b) => (
-                <Link
-                  key={b.id}
-                  to="/requests/$id"
-                  params={{ id: b.id }}
-                  className="flex items-center gap-3 px-3 py-3 text-sm hover:bg-muted"
+                <button
+                  onClick={() => setAiSeed((v) => v + 1)}
+                  className="rounded-md border border-ai/30 bg-ai-soft px-3 py-2 text-sm font-medium text-ai hover:opacity-90"
                 >
-                  <span className="h-2 w-2 shrink-0 rounded-full bg-attention" />
-                  <span className="font-mono text-xs text-muted-foreground">{b.id}</span>
-                  <span className="hidden w-36 truncate font-medium sm:block">{b.title}</span>
-                  <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                    {b.column === "Action Needed" ? "Action needed" : `${b.priority} priority`} ·{" "}
-                    {b.nextAction}
-                  </span>
-                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-                </Link>
-              ))}
-            </div>
-          </section>
-        ) : null}
-        {loaded && requests.length === 0 ? (
-          <section className="rounded-lg border border-dashed bg-card p-8 text-center shadow-card">
-            <h2 className="text-lg font-semibold">No repair requests yet</h2>
-            <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
-              Create your first request, or connect Gmail in the Inbox and create requests from
-              tenant emails. Want to look around first? Load a few clearly labelled sample requests.
-            </p>
-            <div className="mt-4 flex flex-wrap justify-center gap-2">
-              <button
-                onClick={() => setNewOpen(true)}
-                className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-              >
-                New request
-              </button>
-              <button
-                onClick={() =>
-                  void loadSampleData().then(() => {
-                    notify("Sample requests loaded");
-                    return queryClient.invalidateQueries({ queryKey: ["requests"] });
-                  })
-                }
-                className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
-              >
-                Load sample data
-              </button>
-            </div>
-          </section>
-        ) : null}
-        <section>
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-3">
-              <h2 className="font-semibold">Repair workflow</h2>
-              <div
-                className="flex rounded-md border bg-card p-0.5 text-xs"
-                role="group"
-                aria-label="View"
-              >
-                {(
-                  [
-                    ["board", "Board"],
-                    ["list", "List"],
-                  ] as const
-                ).map(([key, label]) => (
-                  <button
-                    key={key}
-                    onClick={() => setView(key)}
-                    aria-pressed={view === key}
-                    className={`rounded px-2.5 py-1 ${view === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  Ask AI to prioritise my day
+                </button>
+              </div>
+              <div className="mt-4 divide-y rounded-md border">
+                {briefing.map((b) => (
+                  <Link
+                    key={b.id}
+                    to="/requests/$id"
+                    params={{ id: b.id }}
+                    className="flex items-center gap-3 px-3 py-3 text-sm hover:bg-muted"
                   >
-                    {label}
-                  </button>
+                    <span className="h-2 w-2 shrink-0 rounded-full bg-attention" />
+                    <span className="font-mono text-xs text-muted-foreground">{b.id}</span>
+                    <span className="hidden w-36 truncate font-medium sm:block">{b.title}</span>
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                      {b.column === "Action Needed" ? "Action needed" : `${b.priority} priority`} ·{" "}
+                      {b.nextAction}
+                    </span>
+                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </Link>
                 ))}
               </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {priority !== "All" && (
-                <button
-                  className="filter-reset"
-                  onClick={() => setPriority("All")}
-                  aria-label="Clear priority filter"
-                >
-                  <X className="h-3.5 w-3.5" />
-                  Clear filter
-                </button>
-              )}
-              <label className="flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm">
-                <Filter className="h-4 w-4 text-muted-foreground" />
-                <span className="sr-only sm:not-sr-only">Priority</span>
-                <select
-                  aria-label="Filter priority"
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value as "All" | Priority)}
-                  className="bg-transparent outline-none"
-                >
-                  <option>All</option>
-                  <option>Urgent</option>
-                  <option>High</option>
-                  <option>Medium</option>
-                  <option>Low</option>
-                </select>
-              </label>
-            </div>
-          </div>
-          {view === "list" ? (
-            <div className="overflow-x-auto rounded-lg border bg-card shadow-card">
-              <table className="w-full min-w-[720px] text-left text-sm">
-                <thead className="border-b bg-muted/50 text-xs text-muted-foreground">
-                  <tr>
-                    <th className="px-4 py-2 font-medium">Request</th>
-                    <th className="px-4 py-2 font-medium">Priority</th>
-                    <th className="px-4 py-2 font-medium">Stage</th>
-                    <th className="px-4 py-2 font-medium">Next to act</th>
-                    <th className="px-4 py-2 font-medium">Next action</th>
-                    <th className="px-4 py-2 font-medium">Updated</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {filtered.map((r) => (
-                    <tr key={r.id} className="hover:bg-muted/50">
-                      <td className="px-4 py-3">
-                        <Link
-                          to="/requests/$id"
-                          params={{ id: r.id }}
-                          className="block focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-                        >
-                          <span className="font-mono text-xs text-muted-foreground">{r.id}</span>
-                          <span className="block font-medium">{r.title}</span>
-                          <span className="block text-xs text-muted-foreground">{r.address}</span>
-                        </Link>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`rounded border px-2 py-0.5 text-xs ${priorityTone[r.priority]}`}
-                        >
-                          {r.priority}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">{r.column}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{r.waitingOn}</td>
-                      <td className="px-4 py-3">{r.nextAction}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{r.lastUpdate}</td>
-                    </tr>
-                  ))}
-                  {filtered.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="p-8 text-center text-sm text-muted-foreground">
-                        No matching requests
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
+            </section>
           ) : null}
-          <div
-            className={`home-board-grid grid grid-cols-5 gap-4 pb-3 ${view === "list" ? "hidden" : ""}`}
-          >
-            {columns.map((c) => {
-              const items = filtered.filter((r) => r.column === c.name);
-              return (
-                <div key={c.name} className="min-h-36 rounded-lg bg-muted/70 p-2">
-                  <div className="mb-2 flex items-center gap-2 px-1 py-1">
-                    <span className={`h-2 w-2 rounded-full ${c.dot}`} />
-                    <span className="text-sm font-medium">{c.name}</span>
-                    <span className={`ml-auto rounded px-1.5 text-xs font-medium ${c.tone}`}>
-                      {items.length}
-                    </span>
-                  </div>
-                  <div className="space-y-2">
-                    {items.map((r) => (
-                      <RequestCard key={r.id} r={r} />
-                    ))}
-                    {items.length === 0 ? (
-                      <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-                        No matching requests
-                      </div>
-                    ) : null}
-                  </div>
+          {loaded && requests.length === 0 ? (
+            <section className="home-empty">
+              <h2 className="text-lg font-semibold">No repair requests yet</h2>
+              <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
+                Create your first request, or connect Gmail in the Inbox and create requests from
+                tenant emails. Want to look around first? Load a few clearly labelled sample
+                requests.
+              </p>
+              <div className="mt-4 flex flex-wrap justify-center gap-2">
+                <button
+                  onClick={() => setNewOpen(true)}
+                  className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+                >
+                  New request
+                </button>
+                <button
+                  onClick={() =>
+                    void loadSampleData().then(() => {
+                      notify("Sample requests loaded");
+                      return queryClient.invalidateQueries({ queryKey: ["requests"] });
+                    })
+                  }
+                  className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+                >
+                  Load sample data
+                </button>
+              </div>
+            </section>
+          ) : null}
+          <section className="operations-workflow">
+            <div className="workflow-toolbar mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-3">
+                <h2 className="font-semibold">Repair workflow</h2>
+                <div
+                  className="flex rounded-md border bg-card p-0.5 text-xs"
+                  role="group"
+                  aria-label="View"
+                >
+                  {(
+                    [
+                      ["board", "By stage"],
+                      ["list", "List"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <button
+                      key={key}
+                      onClick={() => setView(key)}
+                      aria-pressed={view === key}
+                      className={`rounded px-2.5 py-1 ${view === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
-              );
-            })}
-          </div>
-        </section>
+              </div>
+              <div className="flex items-center gap-2">
+                {priority !== "All" && (
+                  <button
+                    className="filter-reset"
+                    onClick={() => setPriority("All")}
+                    aria-label="Clear priority filter"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Clear filter
+                  </button>
+                )}
+                <label className="flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm">
+                  <Filter className="h-4 w-4 text-muted-foreground" />
+                  <span className="sr-only sm:not-sr-only">Priority</span>
+                  <select
+                    aria-label="Filter priority"
+                    value={priority}
+                    onChange={(e) => setPriority(e.target.value as "All" | Priority)}
+                    className="bg-transparent outline-none"
+                  >
+                    <option>All</option>
+                    <option>Urgent</option>
+                    <option>High</option>
+                    <option>Medium</option>
+                    <option>Low</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            {view === "list" ? (
+              <div className="overflow-x-auto rounded-lg border bg-card shadow-card">
+                <table className="w-full min-w-[720px] text-left text-sm">
+                  <thead className="border-b bg-muted/50 text-xs text-muted-foreground">
+                    <tr>
+                      <th className="px-4 py-2 font-medium">Request</th>
+                      <th className="px-4 py-2 font-medium">Priority</th>
+                      <th className="px-4 py-2 font-medium">Stage</th>
+                      <th className="px-4 py-2 font-medium">Next to act</th>
+                      <th className="px-4 py-2 font-medium">Next action</th>
+                      <th className="px-4 py-2 font-medium">Updated</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {filtered.map((r) => (
+                      <tr key={r.id} className="hover:bg-muted/50">
+                        <td className="px-4 py-3">
+                          <Link
+                            to="/requests/$id"
+                            params={{ id: r.id }}
+                            className="block focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                          >
+                            <span className="font-mono text-xs text-muted-foreground">{r.id}</span>
+                            <span className="block font-medium">{r.title}</span>
+                            <span className="block text-xs text-muted-foreground">{r.address}</span>
+                          </Link>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`rounded border px-2 py-0.5 text-xs ${priorityTone[r.priority]}`}
+                          >
+                            {r.priority}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">{r.column}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{r.waitingOn}</td>
+                        <td className="px-4 py-3">{r.nextAction}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{r.lastUpdate}</td>
+                      </tr>
+                    ))}
+                    {filtered.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="p-8 text-center text-sm text-muted-foreground">
+                          No matching requests
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+            <div className={`home-board-grid ${view === "list" ? "hidden" : ""}`}>
+              {columns.map((c) => {
+                const items = filtered.filter((r) => r.column === c.name);
+                return (
+                  <details key={c.name} className="stage-lane" open>
+                    <summary className="stage-heading">
+                      <span className={`h-2 w-2 rounded-full ${c.dot}`} />
+                      <span className="text-sm font-medium">{c.name}</span>
+                      <span className={`ml-auto rounded px-1.5 text-xs font-medium ${c.tone}`}>
+                        {items.length}
+                      </span>
+                    </summary>
+                    <div className="stage-records">
+                      {items.map((r) => (
+                        <RequestCard key={r.id} r={r} />
+                      ))}
+                      {items.length === 0 ? (
+                        <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+                          No matching requests
+                        </div>
+                      ) : null}
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+          </section>
+        </div>
       </div>
       {newOpen ? (
         <CreateRequest

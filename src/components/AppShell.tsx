@@ -171,7 +171,7 @@ export function AppShell({
   }
 
   const sidebar = (
-    <aside className="app-sidebar h-full w-56 shrink-0 border-r bg-sidebar p-3">
+    <aside className="app-sidebar h-full shrink-0">
       <div className="sidebar-caption">Workspace</div>
       <nav className="space-y-0.5" aria-label="Main navigation">
         {nav.map((n) => {
@@ -223,7 +223,7 @@ export function AppShell({
           </div>
           <span className="hidden font-semibold tracking-tight sm:inline">RepairFlow</span>
         </Link>
-        <div className="relative mx-auto flex-1 md:max-w-xl">
+        <div className="global-search relative flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
             ref={searchRef}

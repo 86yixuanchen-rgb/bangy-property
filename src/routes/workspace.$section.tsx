@@ -40,7 +40,7 @@ function WorkspaceSection() {
   const { section } = Route.useParams();
   return (
     <AppShell>
-      <div className="mx-auto max-w-6xl space-y-6 p-4 sm:p-6 lg:p-8">
+      <div className="workspace-page mx-auto max-w-6xl space-y-6 p-4 sm:p-6 lg:p-8">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{title(section)}</h1>
           <p className="mt-1 text-sm text-muted-foreground">

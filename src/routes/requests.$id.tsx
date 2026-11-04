@@ -187,7 +187,7 @@ function Detail() {
             This repair request doesn't exist or may have been removed.
           </p>
           <Link to="/" className="text-sm font-medium text-primary hover:underline">
-            Back to board
+            Back to Home
           </Link>
         </div>
       </AppShell>
@@ -338,7 +338,7 @@ function Detail() {
           className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
           <ChevronLeft className="h-4 w-4" />
-          Back to board
+          Back to Home
         </Link>
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
@@ -404,62 +404,7 @@ function Detail() {
         </div>
 
         <div className="grid gap-6 lg:grid-cols-3">
-          <div className="space-y-6 lg:col-span-2">
-            <div className="ai-review rounded-lg border bg-card p-5">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-ai">
-                  <Sparkles className="h-4 w-4" />
-                  AI suggested next step
-                </div>
-                <button
-                  onClick={() => void analyze()}
-                  disabled={analyzing}
-                  className="flex items-center gap-1 rounded-md border bg-card px-2 py-1 text-xs hover:bg-muted disabled:opacity-60"
-                >
-                  <RefreshCw className={`h-3 w-3 ${analyzing ? "animate-spin" : ""}`} />
-                  {analyzing ? "Analysing…" : d?.ai ? "Regenerate" : "Generate"}
-                </button>
-              </div>
-              {d?.ai ? (
-                <>
-                  <p className="mt-3 text-sm text-muted-foreground">{d.ai.summary}</p>
-                  <div className="mt-3 text-lg font-semibold">{d.ai.nextStep}</div>
-                  <div className="mt-1 text-sm text-muted-foreground">
-                    Waiting on {d.ai.waitingOn} · suggested column: {d.ai.column}
-                  </div>
-                  <div className="mt-4 flex flex-wrap items-center gap-2">
-                    <button
-                      onClick={() => {
-                        const column = (columns.find((c) => c.name === d.ai?.column)?.name ??
-                          r.column) as Column;
-                        changeColumn(column, {
-                          nextAction: d.ai?.nextStep ?? r.nextAction,
-                          waitingOn: d.ai?.waitingOn ?? r.waitingOn,
-                        });
-                        notify("AI suggestion applied to the request");
-                      }}
-                      className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-                    >
-                      <Check className="h-4 w-4" />
-                      Apply to request
-                    </button>
-                    <span className="text-xs text-muted-foreground">
-                      Generated {formatWhen(d.ai.updatedAt)}. Nothing changes until you apply it.
-                    </span>
-                  </div>
-                </>
-              ) : (
-                <p className="mt-3 text-sm text-muted-foreground">
-                  {analyzing
-                    ? "Reading the emails and activity for this request…"
-                    : d && d.emails.length === 0
-                      ? "No emails are linked yet. Add the tenant, landlord and repair team below so their emails appear here, then the AI will suggest what to do next."
-                      : "Generate a summary and a recommended next step."}
-                </p>
-              )}
-              {aiError ? <p className="mt-2 text-xs text-destructive">{aiError}</p> : null}
-            </div>
-
+          <div className="detail-main space-y-6 lg:col-span-2">
             <div className="confirmed-action rounded-lg border bg-primary-soft p-5">
               <div className="text-xs font-semibold uppercase tracking-wide text-primary">
                 Current next action
@@ -476,181 +421,7 @@ function Detail() {
                 </button>
               </div>
             </div>
-
-            <div className="rounded-lg border bg-card p-5 shadow-card">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="flex items-center gap-2 font-semibold">
-                  <FileText className="h-4 w-4" />
-                  Quotes
-                </h2>
-                <button
-                  onClick={() => setQuoteOpen((v) => !v)}
-                  className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Add quote
-                </button>
-              </div>
-              {quoteOpen ? (
-                <form
-                  onSubmit={(e) => void submitQuote(e)}
-                  className="mb-4 grid gap-2 rounded-md bg-muted p-3 sm:grid-cols-[1fr_8rem]"
-                >
-                  <input
-                    required
-                    value={quoteForm.supplier}
-                    onChange={(e) => setQuoteForm({ ...quoteForm, supplier: e.target.value })}
-                    placeholder="Supplier"
-                    aria-label="Supplier"
-                    className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
-                  />
-                  <input
-                    required
-                    type="number"
-                    min="1"
-                    step="0.01"
-                    value={quoteForm.amount}
-                    onChange={(e) => setQuoteForm({ ...quoteForm, amount: e.target.value })}
-                    placeholder="Amount ($)"
-                    aria-label="Amount"
-                    className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
-                  />
-                  <input
-                    value={quoteForm.description}
-                    onChange={(e) => setQuoteForm({ ...quoteForm, description: e.target.value })}
-                    placeholder="What the quote covers (optional)"
-                    aria-label="Description"
-                    className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring sm:col-span-2"
-                  />
-                  <button className="rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground sm:col-span-2">
-                    Save quote
-                  </button>
-                </form>
-              ) : null}
-              {(d?.quotes ?? []).length === 0 ? (
-                <p className="text-sm text-muted-foreground">No quotes recorded yet.</p>
-              ) : null}
-              <div className="space-y-2">
-                {(d?.quotes ?? []).map((q) => (
-                  <div
-                    key={q.id}
-                    className="flex flex-wrap items-center gap-3 rounded-md border p-3"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium">
-                        {q.supplier} · ${q.amount.toFixed(2)}
-                      </div>
-                      {q.description ? (
-                        <div className="truncate text-xs text-muted-foreground">
-                          {q.description}
-                        </div>
-                      ) : null}
-                    </div>
-                    {q.status === "Pending" ? (
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => void decide(q.id, "Approved")}
-                          className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
-                        >
-                          Approve
-                        </button>
-                        <button
-                          onClick={() => void decide(q.id, "Rejected")}
-                          className="rounded-md border px-3 py-1.5 text-xs"
-                        >
-                          Reject
-                        </button>
-                      </div>
-                    ) : (
-                      <span
-                        className={`rounded px-2 py-0.5 text-xs font-medium ${q.status === "Approved" ? "bg-done-soft text-done" : "bg-muted text-muted-foreground"}`}
-                      >
-                        {q.status}
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="rounded-lg border bg-card p-5 shadow-card">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="flex items-center gap-2 font-semibold">
-                  <CalendarDays className="h-4 w-4" />
-                  Appointments
-                </h2>
-                <button
-                  onClick={() => setApptOpen((v) => !v)}
-                  className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Book
-                </button>
-              </div>
-              {apptOpen ? (
-                <form
-                  onSubmit={(e) => void submitAppointment(e)}
-                  className="mb-4 grid gap-2 rounded-md bg-muted p-3 sm:grid-cols-2"
-                >
-                  <input
-                    required
-                    value={apptForm.title}
-                    onChange={(e) => setApptForm({ ...apptForm, title: e.target.value })}
-                    placeholder="e.g. Plumber attends"
-                    aria-label="Title"
-                    className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring sm:col-span-2"
-                  />
-                  <input
-                    required
-                    type="datetime-local"
-                    value={apptForm.when}
-                    onChange={(e) => setApptForm({ ...apptForm, when: e.target.value })}
-                    aria-label="Date and time"
-                    className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
-                  />
-                  <input
-                    value={apptForm.location}
-                    onChange={(e) => setApptForm({ ...apptForm, location: e.target.value })}
-                    placeholder={r.address}
-                    aria-label="Location"
-                    className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
-                  />
-                  <button className="rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground sm:col-span-2">
-                    Book appointment
-                  </button>
-                </form>
-              ) : null}
-              {(d?.appointments ?? []).length === 0 ? (
-                <p className="text-sm text-muted-foreground">Nothing booked yet.</p>
-              ) : null}
-              <div className="space-y-2">
-                {(d?.appointments ?? []).map((a) => (
-                  <div key={a.id} className="flex items-center gap-3 rounded-md border p-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium">{a.title}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {formatWhen(a.startsAt)}
-                        {a.location ? ` · ${a.location}` : ""}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() =>
-                        void deleteAppointment({ data: { id: a.id } }).then(() => {
-                          void queryClient.invalidateQueries({ queryKey: ["appointments"] });
-                          return refresh();
-                        })
-                      }
-                      className="rounded p-1 text-muted-foreground hover:bg-muted"
-                      aria-label={`Cancel ${a.title}`}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="rounded-lg border bg-card p-5 shadow-card">
+            <div className="communication-ledger rounded-lg border bg-card p-5 shadow-card">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="font-semibold">Activity timeline</h2>
                 <button
@@ -763,7 +534,62 @@ function Detail() {
             </div>
           </div>
 
-          <div className="space-y-6">
+          <div className="detail-support space-y-6">
+            <div className="ai-review rounded-lg border bg-card p-5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-ai">
+                  <Sparkles className="h-4 w-4" />
+                  AI suggested next step
+                </div>
+                <button
+                  onClick={() => void analyze()}
+                  disabled={analyzing}
+                  className="flex items-center gap-1 rounded-md border bg-card px-2 py-1 text-xs hover:bg-muted disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-3 w-3 ${analyzing ? "animate-spin" : ""}`} />
+                  {analyzing ? "Analysing…" : d?.ai ? "Regenerate" : "Generate"}
+                </button>
+              </div>
+              {d?.ai ? (
+                <>
+                  <p className="mt-3 text-sm text-muted-foreground">{d.ai.summary}</p>
+                  <div className="mt-3 text-lg font-semibold">{d.ai.nextStep}</div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    Waiting on {d.ai.waitingOn} · suggested column: {d.ai.column}
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => {
+                        const column = (columns.find((c) => c.name === d.ai?.column)?.name ??
+                          r.column) as Column;
+                        changeColumn(column, {
+                          nextAction: d.ai?.nextStep ?? r.nextAction,
+                          waitingOn: d.ai?.waitingOn ?? r.waitingOn,
+                        });
+                        notify("AI suggestion applied to the request");
+                      }}
+                      className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+                    >
+                      <Check className="h-4 w-4" />
+                      Apply to request
+                    </button>
+                    <span className="text-xs text-muted-foreground">
+                      Generated {formatWhen(d.ai.updatedAt)}. Nothing changes until you apply it.
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  {analyzing
+                    ? "Reading the emails and activity for this request…"
+                    : d && d.emails.length === 0
+                      ? "No emails are linked yet. Add the tenant, landlord and repair team below so their emails appear here, then the AI will suggest what to do next."
+                      : "Generate a summary and a recommended next step."}
+                </p>
+              )}
+              {aiError ? <p className="mt-2 text-xs text-destructive">{aiError}</p> : null}
+            </div>
+
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="font-semibold">People involved</h2>
@@ -903,6 +729,178 @@ function Detail() {
                 ))}
               </div>
             ) : null}
+
+            <div className="rounded-lg border bg-card p-5 shadow-card">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="flex items-center gap-2 font-semibold">
+                  <FileText className="h-4 w-4" />
+                  Quotes
+                </h2>
+                <button
+                  onClick={() => setQuoteOpen((v) => !v)}
+                  className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Add quote
+                </button>
+              </div>
+              {quoteOpen ? (
+                <form
+                  onSubmit={(e) => void submitQuote(e)}
+                  className="mb-4 grid gap-2 rounded-md bg-muted p-3 sm:grid-cols-[1fr_8rem]"
+                >
+                  <input
+                    required
+                    value={quoteForm.supplier}
+                    onChange={(e) => setQuoteForm({ ...quoteForm, supplier: e.target.value })}
+                    placeholder="Supplier"
+                    aria-label="Supplier"
+                    className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
+                  />
+                  <input
+                    required
+                    type="number"
+                    min="1"
+                    step="0.01"
+                    value={quoteForm.amount}
+                    onChange={(e) => setQuoteForm({ ...quoteForm, amount: e.target.value })}
+                    placeholder="Amount ($)"
+                    aria-label="Amount"
+                    className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
+                  />
+                  <input
+                    value={quoteForm.description}
+                    onChange={(e) => setQuoteForm({ ...quoteForm, description: e.target.value })}
+                    placeholder="What the quote covers (optional)"
+                    aria-label="Description"
+                    className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring sm:col-span-2"
+                  />
+                  <button className="rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground sm:col-span-2">
+                    Save quote
+                  </button>
+                </form>
+              ) : null}
+              {(d?.quotes ?? []).length === 0 ? (
+                <p className="text-sm text-muted-foreground">No quotes recorded yet.</p>
+              ) : null}
+              <div className="space-y-2">
+                {(d?.quotes ?? []).map((q) => (
+                  <div
+                    key={q.id}
+                    className="flex flex-wrap items-center gap-3 rounded-md border p-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium">
+                        {q.supplier} · ${q.amount.toFixed(2)}
+                      </div>
+                      {q.description ? (
+                        <div className="truncate text-xs text-muted-foreground">
+                          {q.description}
+                        </div>
+                      ) : null}
+                    </div>
+                    {q.status === "Pending" ? (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => void decide(q.id, "Approved")}
+                          className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          onClick={() => void decide(q.id, "Rejected")}
+                          className="rounded-md border px-3 py-1.5 text-xs"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    ) : (
+                      <span
+                        className={`rounded px-2 py-0.5 text-xs font-medium ${q.status === "Approved" ? "bg-done-soft text-done" : "bg-muted text-muted-foreground"}`}
+                      >
+                        {q.status}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-lg border bg-card p-5 shadow-card">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="flex items-center gap-2 font-semibold">
+                  <CalendarDays className="h-4 w-4" />
+                  Appointments
+                </h2>
+                <button
+                  onClick={() => setApptOpen((v) => !v)}
+                  className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Book
+                </button>
+              </div>
+              {apptOpen ? (
+                <form
+                  onSubmit={(e) => void submitAppointment(e)}
+                  className="mb-4 grid gap-2 rounded-md bg-muted p-3 sm:grid-cols-2"
+                >
+                  <input
+                    required
+                    value={apptForm.title}
+                    onChange={(e) => setApptForm({ ...apptForm, title: e.target.value })}
+                    placeholder="e.g. Plumber attends"
+                    aria-label="Title"
+                    className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring sm:col-span-2"
+                  />
+                  <input
+                    required
+                    type="datetime-local"
+                    value={apptForm.when}
+                    onChange={(e) => setApptForm({ ...apptForm, when: e.target.value })}
+                    aria-label="Date and time"
+                    className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
+                  />
+                  <input
+                    value={apptForm.location}
+                    onChange={(e) => setApptForm({ ...apptForm, location: e.target.value })}
+                    placeholder={r.address}
+                    aria-label="Location"
+                    className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
+                  />
+                  <button className="rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground sm:col-span-2">
+                    Book appointment
+                  </button>
+                </form>
+              ) : null}
+              {(d?.appointments ?? []).length === 0 ? (
+                <p className="text-sm text-muted-foreground">Nothing booked yet.</p>
+              ) : null}
+              <div className="space-y-2">
+                {(d?.appointments ?? []).map((a) => (
+                  <div key={a.id} className="flex items-center gap-3 rounded-md border p-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium">{a.title}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {formatWhen(a.startsAt)}
+                        {a.location ? ` · ${a.location}` : ""}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() =>
+                        void deleteAppointment({ data: { id: a.id } }).then(() => {
+                          void queryClient.invalidateQueries({ queryKey: ["appointments"] });
+                          return refresh();
+                        })
+                      }
+                      className="rounded p-1 text-muted-foreground hover:bg-muted"
+                      aria-label={`Cancel ${a.title}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </div>
