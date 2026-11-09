@@ -1,3 +1,4 @@
+import { CancelVisit } from "@/components/case-workflow/Management";
 import { PropertiesSection } from "@/components/PropertiesSection";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
@@ -11,7 +12,6 @@ import { columns } from "@/lib/data";
 import { disconnectGmail } from "@/lib/gmail.functions";
 import {
   addAppointment,
-  deleteAppointment,
   getAnalytics,
   getSettings,
   listAppointments,
@@ -20,6 +20,8 @@ import {
 
 export const Route = createFileRoute("/workspace/$section")({
   head: ({ params }) => ({ meta: [{ title: `${title(params.section)} — Banjg Property` }] }),
+  validateSearch: (search: Record<string, unknown>): { property?: number } =>
+    Number(search["property"]) > 0 ? { property: Number(search["property"]) } : {},
   component: WorkspaceSection,
 });
 
@@ -37,6 +39,8 @@ const subtitles: Record<string, string> = {
 
 function WorkspaceSection() {
   const { section } = Route.useParams();
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
   return (
     <AppShell>
       <div className="mx-auto max-w-6xl space-y-6 p-4 sm:p-6 lg:p-8">
@@ -47,7 +51,12 @@ function WorkspaceSection() {
           </p>
         </div>
         {section === "properties" ? (
-          <PropertiesSection />
+          <PropertiesSection
+            selectedPropertyId={search.property ?? null}
+            onSelectProperty={(property) => {
+              void navigate({ search: property ? { property } : {} });
+            }}
+          />
         ) : section === "contacts" ? (
           <ContactsSection />
         ) : section === "calendar" ? (
@@ -167,9 +176,11 @@ function CalendarSection() {
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const endOfToday = startOfToday.getTime() + 24 * 3600 * 1000;
-  const today = data.filter((a) => a.startsAt >= startOfToday.getTime() && a.startsAt < endOfToday);
-  const upcoming = data.filter((a) => a.startsAt >= endOfToday);
-  const past = data.filter((a) => a.startsAt < startOfToday.getTime()).reverse();
+  const today = data.filter(
+    (a) => !a.cancelledAt && a.startsAt >= startOfToday.getTime() && a.startsAt < endOfToday,
+  );
+  const upcoming = data.filter((a) => !a.cancelledAt && a.startsAt >= endOfToday);
+  const past = data.filter((a) => !a.cancelledAt && a.startsAt < startOfToday.getTime()).reverse();
 
   const group = (label: string, items: typeof data) =>
     items.length === 0 ? null : (
@@ -180,18 +191,7 @@ function CalendarSection() {
             <div key={a.id} className="rounded-lg border bg-card p-4 shadow-card">
               <div className="flex items-start justify-between gap-2">
                 <CalendarDays className="h-5 w-5 text-primary" />
-                <button
-                  onClick={() =>
-                    void deleteAppointment({ data: { id: a.id } }).then(() => {
-                      notify("Appointment removed");
-                      return refresh();
-                    })
-                  }
-                  className="rounded p-1 text-muted-foreground hover:bg-muted"
-                  aria-label={`Remove ${a.title}`}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+                <CancelVisit appointment={a} onChanged={refresh} />
               </div>
               <div className="mt-2 text-xs text-muted-foreground">
                 {new Date(a.startsAt).toLocaleString([], {
@@ -320,6 +320,10 @@ function CalendarSection() {
       {group("Today", today)}
       {group("Upcoming", upcoming)}
       {group("Past", past)}
+      {group(
+        "Cancelled",
+        data.filter((a) => a.cancelledAt),
+      )}
     </>
   );
 }

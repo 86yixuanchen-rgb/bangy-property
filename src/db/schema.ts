@@ -1,4 +1,12 @@
-import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import {
+  foreignKey,
+  index,
+  uniqueIndex,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+} from "drizzle-orm/sqlite-core";
 
 export const repairRequests = sqliteTable(
   "repair_requests",
@@ -23,6 +31,7 @@ export const repairRequests = sqliteTable(
     aiColumn: text("ai_column"),
     aiWaitingOn: text("ai_waiting_on"),
     aiUpdatedAt: integer("ai_updated_at"),
+    aiSourceVersion: text("ai_source_version"),
   },
   (t) => [
     primaryKey({ columns: [t.userId, t.id] }),
@@ -84,6 +93,7 @@ export const emailMessages = sqliteTable(
 );
 
 export const properties = sqliteTable("properties", {
+  archivedAt: integer("archived_at"),
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id").notNull(),
   address: text("address").notNull(),
@@ -96,18 +106,26 @@ export const properties = sqliteTable("properties", {
   notes: text("notes").notNull().default(""),
 });
 
-export const requestQuotes = sqliteTable("request_quotes", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  userId: text("user_id").notNull(),
-  requestId: text("request_id").notNull(),
-  supplier: text("supplier").notNull(),
-  amountCents: integer("amount_cents").notNull(),
-  description: text("description").notNull().default(""),
-  status: text("status", { enum: ["Pending", "Approved", "Rejected"] }).notNull(),
-  createdAt: integer("created_at").notNull(),
-});
+export const requestQuotes = sqliteTable(
+  "request_quotes",
+  {
+    supersedesId: integer("supersedes_id"),
+    supersededAt: integer("superseded_at"),
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: text("user_id").notNull(),
+    requestId: text("request_id").notNull(),
+    supplier: text("supplier").notNull(),
+    amountCents: integer("amount_cents").notNull(),
+    description: text("description").notNull().default(""),
+    status: text("status", { enum: ["Pending", "Approved", "Rejected"] }).notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [uniqueIndex("quote_successor_idx").on(t.userId, t.supersedesId)],
+);
 
 export const appointments = sqliteTable("appointments", {
+  cancelledAt: integer("cancelled_at"),
+  cancelReason: text("cancel_reason"),
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id").notNull(),
   requestId: text("request_id"),
@@ -136,4 +154,105 @@ export const mailSendOperations = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (t) => [primaryKey({ columns: [t.userId, t.operationId] })],
+);
+
+export const requestActions = sqliteTable(
+  "request_actions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    requestId: text("request_id").notNull(),
+    actionKey: text("action_key").notNull(),
+    kind: text("kind").$type<import("@/lib/incident-action-types").ActionKind>().notNull(),
+    title: text("title").notNull(),
+    reason: text("reason").notNull(),
+    recipientEmail: text("recipient_email"),
+    quoteId: integer("quote_id"),
+    subject: text("subject").notNull(),
+    body: text("body").notNull(),
+    sourceVersion: text("source_version").notNull(),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    state: text("state", { enum: ["pending", "sending", "sent"] })
+      .notNull()
+      .default("pending"),
+    operationId: text("operation_id").notNull(),
+    editedAt: integer("edited_at"),
+    sentAt: integer("sent_at"),
+    attachmentIds: text("attachment_ids").notNull().default("[]"),
+    disposition: text("disposition").notNull().default("open"),
+    dispositionNote: text("disposition_note").notNull().default(""),
+    followUpAt: integer("follow_up_at"),
+    handledReplyId: text("handled_reply_id"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    index("request_actions_request_idx").on(t.userId, t.requestId),
+    uniqueIndex("request_actions_key_idx").on(t.userId, t.requestId, t.actionKey),
+    foreignKey({
+      columns: [t.userId, t.requestId],
+      foreignColumns: [repairRequests.userId, repairRequests.id],
+    }).onDelete("cascade"),
+  ],
+);
+
+export const caseClosures = sqliteTable("case_closures", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  requestId: text("request_id").notNull(),
+  type: text("type").notNull(),
+  outcome: text("outcome").notNull(),
+  costCents: integer("cost_cents"),
+  tenantConfirmation: text("tenant_confirmation").notNull(),
+  at: integer("at").notNull(),
+});
+export const quoteDecisions = sqliteTable(
+  "quote_decisions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    requestId: text("request_id").notNull(),
+    quoteId: integer("quote_id").notNull(),
+    decision: text("decision").notNull(),
+    method: text("method").notNull(),
+    evidence: text("evidence").notNull(),
+    emailId: text("email_id"),
+    amountCents: integer("amount_cents").notNull(),
+    at: integer("at").notNull(),
+  },
+  (t) => [uniqueIndex("quote_decisions_once_idx").on(t.userId, t.quoteId)],
+);
+export const caseAttachments = sqliteTable("case_attachments", {
+  trashedAt: integer("trashed_at"),
+  quoteId: integer("quote_id"),
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  requestId: text("request_id").notNull(),
+  name: text("name").notNull(),
+  mime: text("mime").notNull(),
+  category: text("category").notNull(),
+  size: integer("size").notNull(),
+  content: text("content").notNull(),
+  at: integer("at").notNull(),
+});
+
+export const mailSendFiles = sqliteTable(
+  "mail_send_files",
+  {
+    userId: text("user_id").notNull(),
+    operationId: text("operation_id").notNull(),
+    fileId: text("file_id").notNull(),
+    name: text("name").notNull(),
+    mime: text("mime").notNull(),
+    content: text("content").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.operationId, t.fileId] })],
+);
+export const notificationReads = sqliteTable(
+  "notification_reads",
+  {
+    userId: text("user_id").notNull(),
+    key: text("key").notNull(),
+    at: integer("at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.key] })],
 );

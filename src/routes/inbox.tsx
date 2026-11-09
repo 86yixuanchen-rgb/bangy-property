@@ -1,3 +1,4 @@
+import { AttachmentPicker } from "@/components/case-workflow/Management";
 import { PropertySelect } from "@/components/PropertySelect";
 import { sendEmail } from "@/lib/send-email";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
@@ -57,6 +58,8 @@ function InboxPage() {
   const [creating, setCreating] = useState(false);
   const [newPropertyId, setNewPropertyId] = useState("");
   const [reconnect, setReconnect] = useState(false);
+  const [composeFiles, setComposeFiles] = useState<string[]>([]);
+  const [replyFiles, setReplyFiles] = useState<string[]>([]);
   const { requests, addRequest, notify } = useWorkspace();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -107,6 +110,7 @@ function InboxPage() {
   useEffect(() => {
     setReplying(false);
     setReply("");
+    setReplyFiles([]);
   }, [selectedId]);
 
   const list = useMemo(() => {
@@ -167,6 +171,7 @@ function InboxPage() {
           subject: subject.trim(),
           body: body.trim(),
           requestId: requestId || null,
+          attachmentIds: composeFiles,
         },
       });
       if (result.ok) {
@@ -176,6 +181,7 @@ function InboxPage() {
         setSubject("");
         setBody("");
         setRequestId("");
+        setComposeFiles([]);
         setFolder("sent");
         setSelectedId("");
         await refreshLinks();
@@ -208,6 +214,7 @@ function InboxPage() {
           body: reply.trim(),
           requestId: selected.requestId,
           threadId: selected.threadId,
+          attachmentIds: replyFiles,
         },
       });
       if (result.ok) {
@@ -400,7 +407,10 @@ function InboxPage() {
                 Repair request (optional)
                 <select
                   value={requestId}
-                  onChange={(event) => setRequestId(event.target.value)}
+                  onChange={(event) => {
+                    setRequestId(event.target.value);
+                    setComposeFiles([]);
+                  }}
                   className="mt-1 block w-full rounded-md border bg-background p-2"
                 >
                   <option value="">No linked request</option>
@@ -421,6 +431,12 @@ function InboxPage() {
                   className="mt-1 block min-h-64 w-full rounded-md border bg-background p-3"
                 />
               </label>
+              <AttachmentPicker
+                requestId={requestId || null}
+                value={composeFiles}
+                onChange={setComposeFiles}
+                disabled={sending}
+              />
               <div className="flex justify-end gap-2">
                 <button
                   type="button"
@@ -494,6 +510,12 @@ function InboxPage() {
                       onChange={(e) => setReply(e.target.value)}
                       placeholder={`Reply to ${selected.fromName}…`}
                       className="min-h-28 w-full rounded-md border p-3 text-sm outline-none focus:border-ring"
+                    />
+                    <AttachmentPicker
+                      requestId={selected.requestId}
+                      value={replyFiles}
+                      onChange={setReplyFiles}
+                      disabled={sending}
                     />
                     <div className="mt-2 flex justify-end gap-2">
                       <button

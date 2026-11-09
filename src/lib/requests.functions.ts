@@ -81,6 +81,8 @@ export const patchRequest = createServerFn({ method: "POST" })
     const { getDb } = await import("./db.server");
     const db = await getDb();
     const { column: boardColumn, ...rest } = data.patch;
+    if (boardColumn === "Completed")
+      throw new Error("Open the event and use Close case to record the outcome.");
     const set = { ...rest, ...(boardColumn ? { boardColumn } : {}) };
     if (Object.keys(set).length > 0) {
       const [before] = boardColumn

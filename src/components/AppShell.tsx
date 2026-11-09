@@ -1,3 +1,4 @@
+import { NotificationBell } from "./case-workflow/NotificationBell";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -58,7 +59,6 @@ export function AppShell({
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [search, setSearch] = useState("");
-  const [notifOpen, setNotifOpen] = useState(false);
   const [profile, setProfile] = useState(false);
   const { requests, toasts, dismissToast } = useWorkspace();
   const { user, ready, isSignedIn, signOut } = useAuth();
@@ -72,7 +72,6 @@ export function AppShell({
     ? inbox.emails.filter((m) => m.unread && m.inInbox && !m.trashed).length
     : 0;
   const navigate = useNavigate();
-  const notifRef = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -82,17 +81,6 @@ export function AppShell({
   useEffect(() => {
     if (openAssistantSignal > 0) setAssistantOpen(true);
   }, [openAssistantSignal]);
-
-  useEffect(() => {
-    if (!notifOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
-        setNotifOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [notifOpen]);
 
   useEffect(() => {
     if (!profile) return;
@@ -117,17 +105,6 @@ export function AppShell({
           .slice(0, 6)
       : [];
   }, [requests, search]);
-
-  const notifItems = useMemo(
-    () =>
-      requests
-        .filter(
-          (r) =>
-            r.column === "Action Needed" || (r.column === "Waiting" && r.waiting.includes("day")),
-        )
-        .slice(0, 5),
-    [requests],
-  );
 
   const openAI = () => {
     setAssistantOpen(true);
@@ -243,46 +220,7 @@ export function AppShell({
           ) : null}
         </div>
         <div className="ml-auto flex items-center gap-1 sm:gap-2">
-          <div ref={notifRef} className="relative">
-            <button
-              onClick={() => setNotifOpen((v) => !v)}
-              className="relative rounded-md p-2 text-muted-foreground hover:bg-muted"
-              aria-label="Notifications"
-              aria-expanded={notifOpen}
-            >
-              <Bell className="h-5 w-5" />
-              {notifItems.length > 0 ? (
-                <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-attention" />
-              ) : null}
-            </button>
-            {notifOpen ? (
-              <div className="absolute right-0 top-10 z-50 w-72 rounded-lg border bg-card shadow-float">
-                <div className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">
-                  Needs attention
-                </div>
-                {notifItems.length > 0 ? (
-                  notifItems.map((r) => (
-                    <button
-                      key={r.id}
-                      onClick={() => {
-                        setNotifOpen(false);
-                        void navigate({ to: "/requests/$id", params: { id: r.id } });
-                      }}
-                      className="flex w-full items-start gap-3 rounded-md p-3 text-left hover:bg-muted"
-                    >
-                      <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-attention" />
-                      <span>
-                        <span className="block text-xs font-medium">{r.title}</span>
-                        <span className="block text-xs text-muted-foreground">{r.nextAction}</span>
-                      </span>
-                    </button>
-                  ))
-                ) : (
-                  <div className="p-4 text-center text-xs text-muted-foreground">All caught up</div>
-                )}
-              </div>
-            ) : null}
-          </div>
+          <NotificationBell />
           <div ref={profileRef} className="relative">
             <button
               onClick={() => setProfile((v) => !v)}

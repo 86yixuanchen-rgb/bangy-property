@@ -32,7 +32,7 @@ export function PropertySelect({
         className="mt-1 h-10 w-full min-w-0 rounded-md border bg-card px-3 font-normal"
       >
         <option value="">{isLoading ? "Loading properties…" : "Choose a property…"}</option>
-        {data.map((p) => (
+        {data.filter(p=>!p.archivedAt).map((p) => (
           <option key={p.id} value={String(p.id)}>
             {p.address}
           </option>

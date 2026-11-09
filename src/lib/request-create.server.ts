@@ -18,7 +18,7 @@ export async function createRequestRecord(
     .select()
     .from(properties)
     .where(and(eq(properties.userId, userId), eq(properties.id, input.propertyId)));
-  if (!property) throw new Error("Property not found in your workspace");
+  if (!property || property.archivedAt) throw new Error("Property not found in your workspace");
   const inherited = propertyPeople(property);
   const next = sql`(SELECT coalesce(max(cast(substr(id, 5) as integer)), 108) + 1
     FROM repair_requests WHERE user_id = ${userId})`;

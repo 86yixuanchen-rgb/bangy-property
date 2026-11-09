@@ -1,8 +1,10 @@
+import { resolveAttachments, buildMailMime } from "./mail-attachments.server";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import {
   emailMessages,
   gmailAccounts,
   mailSendOperations,
+  mailSendFiles,
   repairRequests,
   requestParticipants,
 } from "@/db/schema";
@@ -376,6 +378,7 @@ export async function sendMail(
     requestId: string | null;
     threadId?: string;
     operationId?: string;
+    attachmentIds?: string[];
   },
 ) {
   const db = await getDb();
@@ -393,29 +396,45 @@ export async function sendMail(
   }
 
   const operationId = input.operationId ?? crypto.randomUUID();
+  const attachmentIds = [...new Set(input.attachmentIds ?? [])].sort();
   const payload = JSON.stringify({
     to: input.to,
     subject: input.subject,
     body: input.body,
     requestId: input.requestId,
     threadId: input.threadId ?? null,
+    ...(attachmentIds.length ? { attachmentIds } : {}),
   });
   const condition = and(
     eq(mailSendOperations.userId, userId),
     eq(mailSendOperations.operationId, operationId),
   );
-  const claimed = await db
-    .insert(mailSendOperations)
-    .values({
-      userId,
-      operationId,
-      mailbox: account.email.toLowerCase(),
-      payload,
-      state: "sending",
-      createdAt: Date.now(),
-    })
-    .onConflictDoNothing()
-    .returning();
+  const [priorOperation] = await db.select().from(mailSendOperations).where(condition);
+  const files = priorOperation
+    ? []
+    : await resolveAttachments(db, userId, input.requestId, attachmentIds);
+  const [claimed] = await db.batch([
+    db
+      .insert(mailSendOperations)
+      .values({
+        userId,
+        operationId,
+        mailbox: account.email.toLowerCase(),
+        payload,
+        state: "sending",
+        createdAt: Date.now(),
+      })
+      .onConflictDoNothing()
+      .returning(),
+    ...files.map((f) =>
+      db
+        .insert(mailSendFiles)
+        .select(
+          sql`SELECT ${userId}, ${operationId}, ${f.id}, ${f.name}, ${f.mime}, ${f.content} WHERE EXISTS (SELECT 1 FROM mail_send_operations WHERE user_id=${userId} AND operation_id=${operationId} AND payload=${payload})`,
+        )
+        .onConflictDoNothing(),
+    ),
+  ]);
   let [operation] = await db.select().from(mailSendOperations).where(condition);
   if (
     !operation ||
@@ -465,21 +484,16 @@ export async function sendMail(
     operation = saved!;
   }
   const to = cleanHeader(input.to);
-  const subject = cleanHeader(input.subject);
-  const encodedSubject = /^[\x20-\x7e]*$/.test(subject)
-    ? subject
-    : `=?UTF-8?B?${b64(new TextEncoder().encode(subject))}?=`;
-  const bodyB64 = (b64(new TextEncoder().encode(input.body)).match(/.{1,76}/g) ?? []).join("\r\n");
-  const mime = [
-    `Message-ID: <banjg-${operationId}@mail.banjg.invalid>`,
-    `To: ${to}`,
-    `Subject: ${encodedSubject}`,
-    "MIME-Version: 1.0",
-    'Content-Type: text/plain; charset="UTF-8"',
-    "Content-Transfer-Encoding: base64",
-    "",
-    bodyB64,
-  ].join("\r\n");
+  const snapshots = await db
+    .select()
+    .from(mailSendFiles)
+    .where(and(eq(mailSendFiles.userId, userId), eq(mailSendFiles.operationId, operationId)));
+  if (snapshots.length !== attachmentIds.length)
+    throw new Error("Attachment snapshot is incomplete. Do not retry with a different message.");
+  const mime = buildMailMime(
+    { operationId, to, subject: input.subject, body: input.body },
+    snapshots.sort((a, b) => a.fileId.localeCompare(b.fileId)),
+  );
   const raw = b64(new TextEncoder().encode(mime))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
@@ -548,7 +562,7 @@ export async function sendMail(
       fromName: "You",
       fromEmail: account.email.toLowerCase(),
       toEmails: to.toLowerCase(),
-      subject,
+      subject: cleanHeader(input.subject),
       snippet: input.body.slice(0, 300),
       body: input.body.slice(0, 20000),
       receivedAt: operation.createdAt,

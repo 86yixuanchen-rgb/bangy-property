@@ -1,9 +1,10 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { Building2, Clock, User, ArrowRight, MoreHorizontal } from "lucide-react";
 import { columns, priorityTone, type RepairRequest } from "@/lib/data";
 import { columnStatus, useWorkspace } from "@/lib/workspace";
 
 export function RequestCard({ r }: { r: RepairRequest }) {
+  const navigate = useNavigate();
   const { updateRequest, notify } = useWorkspace();
   return (
     <article className="group relative rounded-lg border bg-card p-3 shadow-card transition hover:border-ring">
@@ -30,6 +31,11 @@ export function RequestCard({ r }: { r: RepairRequest }) {
               value={r.column}
               onChange={(e) => {
                 const column = e.target.value as RepairRequest["column"];
+                if (column === "Completed") {
+                  void navigate({ to: "/requests/$id", params: { id: r.id } });
+                  notify("Use Close case to record the outcome.");
+                  return;
+                }
                 updateRequest(r.id, {
                   column,
                   status: columnStatus[column],
@@ -48,12 +54,14 @@ export function RequestCard({ r }: { r: RepairRequest }) {
         </div>
       </div>
       <div
-        className={`mt-3 flex items-start gap-2 rounded-md p-2 ${r.propertyId ? "bg-primary-soft text-primary" : "bg-waiting-soft text-waiting"}`}
+        className={`event-property mt-3 flex items-start gap-2 rounded-md p-2 ${r.propertyId ? "bg-primary-soft text-primary" : "bg-waiting-soft text-waiting"}`}
       >
         <Building2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
         <div className="min-w-0">
-          <div className="text-[10px] font-medium uppercase tracking-wide">Property</div>
-          <div className="break-words text-xs font-semibold leading-relaxed">
+          <div className="event-property-label text-[10px] font-medium uppercase tracking-wide">
+            Property
+          </div>
+          <div className="event-property-address break-words text-xs font-semibold leading-relaxed">
             {r.propertyId ? r.address : "No property linked"}
           </div>
           {!r.propertyId ? (
@@ -61,9 +69,9 @@ export function RequestCard({ r }: { r: RepairRequest }) {
           ) : null}
         </div>
       </div>
-      <div className="mt-2 text-sm font-medium leading-snug">{r.title}</div>
-      <div className="mt-2 text-[11px] text-muted-foreground">{r.status}</div>
-      <div className="mt-2 space-y-1.5 rounded-md bg-muted p-2">
+      <div className="event-title mt-2 text-sm font-medium leading-snug">{r.title}</div>
+      <div className="event-status mt-2 text-[11px] text-muted-foreground">{r.status}</div>
+      <div className="event-next mt-2 space-y-1.5 rounded-md bg-muted p-2">
         <div className="flex items-start gap-1.5 text-xs">
           <User className="mt-0.5 h-3.5 w-3.5 shrink-0 text-waiting" />
           <span>
@@ -76,7 +84,7 @@ export function RequestCard({ r }: { r: RepairRequest }) {
           <span className="font-semibold text-primary">{r.nextAction}</span>
         </div>
       </div>
-      <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+      <div className="event-footer mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
         <span className="flex items-center gap-1">
           <Clock className="h-3 w-3" />
           {r.waiting}

@@ -38,7 +38,7 @@ const aiInput = z
   .object({
     model: z.literal("deepseek-chat"),
     temperature: z.number().min(0).max(1),
-    max_tokens: z.number().int().positive().max(1600),
+    max_tokens: z.number().int().positive().max(4000),
     response_format: z.object({ type: z.literal("json_object") }).strict(),
     messages: z
       .array(

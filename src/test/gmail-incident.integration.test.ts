@@ -469,6 +469,53 @@ describe("Reliable operations", () => {
     expect(stored?.lastSyncAt).toBe(123);
   });
 
+  it("sends real MIME attachment bytes and retries the immutable snapshot after file recycling", async () => {
+    const gmail = await import("@/lib/gmail.server");
+    const userId = "attachment-retry";
+    await gmail.connectAccount(userId, "code", origin);
+    await request(userId, "REQ-888");
+    const fileId = crypto.randomUUID();
+    await db.insert(schema.caseAttachments).values({
+      id: fileId,
+      userId,
+      requestId: "REQ-888",
+      name: "quote.pdf",
+      mime: "application/pdf",
+      category: "Quote",
+      size: 12,
+      content: btoa("%PDF original"),
+      at: Date.now(),
+    });
+    const input = {
+      to: "tenant@example.test",
+      subject: "Quote",
+      body: "See attached",
+      requestId: "REQ-888",
+      operationId: crypto.randomUUID(),
+      attachmentIds: [fileId],
+    };
+    sendStatus = 403;
+    await expect(gmail.sendMail(userId, origin, input)).rejects.toBeInstanceOf(
+      gmail.ReconnectRequired,
+    );
+    await db
+      .update(schema.caseAttachments)
+      .set({ name: "renamed.pdf", trashedAt: Date.now() })
+      .where(eq(schema.caseAttachments.id, fileId));
+    sendStatus = 200;
+    await gmail.sendMail(userId, origin, input);
+    expect(sentBodies).toHaveLength(2);
+    expect(sentBodies[0]!.raw).toBe(sentBodies[1]!.raw);
+    const mime = Buffer.from(sentBodies[0]!.raw, "base64url").toString("utf8");
+    expect(mime).toContain('filename="quote.pdf"');
+    expect(mime).toContain(btoa("%PDF original"));
+    await gmail.sendMail(userId, origin, input);
+    expect(sentBodies).toHaveLength(2);
+    await expect(gmail.sendMail(userId, origin, { ...input, attachmentIds: [] })).rejects.toThrow(
+      "does not match",
+    );
+  });
+
   it("permits retry of a definite Gmail rejection using the same operation", async () => {
     const gmail = await import("@/lib/gmail.server");
     await gmail.connectAccount("rejected-retry", "code", origin);

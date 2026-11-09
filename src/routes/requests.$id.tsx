@@ -1,3 +1,10 @@
+import {
+  AttachmentPicker,
+  CancelVisit,
+  ReviseQuote,
+  CorrectProperty,
+} from "@/components/case-workflow/Management";
+import { createContactDraft } from "@/lib/case-workflow.functions";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -19,6 +26,12 @@ import {
   Flag,
   CalendarDays,
 } from "lucide-react";
+import {
+  CaseRecords,
+  QuoteDecisionButton,
+  RescheduleButton,
+} from "@/components/case-workflow/CaseWorkflow";
+import { IncidentActions } from "@/components/incident-actions/IncidentActions";
 import { PropertySelect } from "@/components/PropertySelect";
 import { linkProperty } from "@/lib/requests.functions";
 import { AppShell } from "@/components/AppShell";
@@ -36,12 +49,7 @@ import {
 } from "@/lib/incidents.functions";
 import { participantRoles } from "@/db/schema";
 import { sendEmail } from "@/lib/send-email";
-import {
-  addAppointment,
-  addQuote,
-  decideQuote,
-  deleteAppointment,
-} from "@/lib/workspace.functions";
+import { addAppointment, addQuote } from "@/lib/workspace.functions";
 
 export const Route = createFileRoute("/requests/$id")({
   head: ({ params }) => ({
@@ -121,10 +129,28 @@ function Detail() {
   const queryClient = useQueryClient();
   const [selectedProperty, setSelectedProperty] = useState("");
   const [linkingProperty, setLinkingProperty] = useState(false);
+  const [timelineFilter, setTimelineFilter] = useState("all");
   const [propertyError, setPropertyError] = useState("");
+  const [reminderFiles, setReminderFiles] = useState<string[]>([]);
   const [reminderOpen, setReminderOpen] = useState(false);
   const [reminder, setReminder] = useState({ to: "", subject: "", body: "" });
   const [sending, setSending] = useState(false);
+  const [reminderDirty, setReminderDirty] = useState(false);
+  const [reminderLeave, setReminderLeave] = useState(false);
+  const [reminderOperation, setReminderOperation] = useState(() => crypto.randomUUID());
+  const closeReminder = () => {
+    if (reminderDirty) setReminderLeave(true);
+    else setReminderOpen(false);
+  };
+  useEffect(() => {
+    if (!reminderOpen || !reminderDirty) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [reminderOpen, reminderDirty]);
   const [quoteForm, setQuoteForm] = useState({ supplier: "", amount: "", description: "" });
   const [quoteOpen, setQuoteOpen] = useState(false);
   const [apptForm, setApptForm] = useState({ title: "", when: "", location: "" });
@@ -146,7 +172,13 @@ function Detail() {
     queryKey: ["incident", id],
     queryFn: () => getIncident({ data: { id } }),
     staleTime: 0,
+    refetchInterval: 60000,
   });
+  useEffect(() => {
+    const listener = (event: Event) => notify((event as CustomEvent<string>).detail);
+    window.addEventListener("workflow-notice", listener);
+    return () => window.removeEventListener("workflow-notice", listener);
+  }, [notify]);
   const d = incident.data;
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["incident", id] });
   const refreshSoon = () => window.setTimeout(() => void refresh(), 800);
@@ -174,9 +206,8 @@ function Detail() {
   const attempted = useRef("");
   useEffect(() => {
     if (!d || !r || d.emails.length === 0) return;
-    const newest = Math.max(...d.emails.map((e) => e.receivedAt), ...d.events.map((e) => e.at));
-    const key = `${id}:${newest}`;
-    if ((!d.ai || newest > d.ai.updatedAt) && attempted.current !== key) {
+    const key = `${id}:${d.planVersion}`;
+    if ((!d.ai || d.planSourceVersion !== d.planVersion) && attempted.current !== key) {
       attempted.current = key;
       void analyze();
     }
@@ -199,7 +230,23 @@ function Detail() {
     );
   }
 
-  const stepIndex = columns.findIndex((c) => c.name === r.column);
+  const caseStages = [
+    "Report received",
+    "Information gathering",
+    "Quote & approval",
+    "Repair",
+    "Resolved",
+  ];
+  const stepIndex =
+    r.column === "Completed"
+      ? 4
+      : d?.appointments.length
+        ? 3
+        : d?.quotes.length
+          ? 2
+          : d?.ai
+            ? 1
+            : 0;
 
   const participants = d?.participants ?? [];
   const roleOf = new Map(participants.map((p) => [p.email.toLowerCase(), p.role as string]));
@@ -220,6 +267,11 @@ function Detail() {
       .length;
 
   const changeColumn = (column: Column, extra: Partial<typeof r> = {}) => {
+    if (column === "Completed") {
+      document.getElementById("case-records")?.scrollIntoView({ behavior: "smooth" });
+      notify("Use Close case to record the outcome.");
+      return;
+    }
     updateRequest(r.id, {
       column,
       status: columnStatus[column],
@@ -265,15 +317,20 @@ function Detail() {
       body: `Hi ${first},\n\nA quick follow-up on the repair request "${r.title}" at ${r.address}.\n\nNext step: ${r.nextAction}\n\nCould you please let me know where this is up to?\n\nThanks,\n${user?.name ?? ""}`,
     });
     setReminderOpen(true);
+    setReminderFiles([]);
   };
 
   const submitReminder = async (e: React.FormEvent) => {
     e.preventDefault();
     setSending(true);
     try {
-      const result = await sendEmail({ data: { ...reminder, requestId: r.id } });
+      const result = await sendEmail({
+        data: { ...reminder, requestId: r.id, attachmentIds: reminderFiles },
+      });
       if (result.ok) {
         setReminderOpen(false);
+        setReminderDirty(false);
+        setReminderLeave(false);
         await refresh();
         notify(`Email sent to ${reminder.to}`);
       } else if (result.code === "RECONNECT") {
@@ -310,13 +367,6 @@ function Detail() {
     notify("Quote recorded");
   };
 
-  const decide = async (id: number, decision: "Approved" | "Rejected") => {
-    await decideQuote({ data: { id, decision } });
-    if (decision === "Approved") changeColumn("Scheduled", { status: "Ready to schedule" });
-    await refresh();
-    notify(`Quote ${decision.toLowerCase()}`);
-  };
-
   const submitAppointment = async (e: React.FormEvent) => {
     e.preventDefault();
     const startsAt = new Date(apptForm.when).getTime();
@@ -332,6 +382,11 @@ function Detail() {
     setApptForm({ title: "", when: "", location: "" });
     setApptOpen(false);
     await Promise.all([refresh(), queryClient.invalidateQueries({ queryKey: ["appointments"] })]);
+    changeColumn("Scheduled", {
+      status: "Repair visit booked",
+      nextAction: "Attend the booked repair visit",
+      waitingOn: "Repair Team",
+    });
     notify("Appointment booked");
   };
 
@@ -358,25 +413,18 @@ function Detail() {
 
         <div className="rounded-lg border bg-card p-4 shadow-card">
           <ol className="flex items-start" aria-label="Request progress">
-            {columns.map((c, i) => {
+            {caseStages.map((label, i) => {
               const done = i < stepIndex;
               const current = i === stepIndex;
               return (
-                <li key={c.name} className="relative flex flex-1 flex-col items-center text-center">
+                <li key={label} className="relative flex flex-1 flex-col items-center text-center">
                   {i > 0 ? (
                     <span
                       className={`absolute left-[-50%] top-3 h-0.5 w-full ${i <= stepIndex ? "bg-primary" : "bg-border"}`}
                     />
                   ) : null}
-                  <button
-                    onClick={() => {
-                      if (!current) {
-                        changeColumn(c.name);
-                        notify(`${r.id} moved to ${c.name}`);
-                      }
-                    }}
+                  <span
                     aria-current={current ? "step" : undefined}
-                    title={`Move to ${c.name}`}
                     className={`relative z-10 grid h-6 w-6 place-items-center rounded-full border-2 text-[10px] font-semibold ${
                       current
                         ? "border-primary bg-primary text-primary-foreground ring-4 ring-primary/20"
@@ -386,17 +434,30 @@ function Detail() {
                     }`}
                   >
                     {done ? <Check className="h-3 w-3" /> : i + 1}
-                  </button>
+                  </span>
                   <span
                     className={`mt-1.5 text-[11px] ${current ? "font-semibold text-primary" : "text-muted-foreground"}`}
                   >
-                    {c.name}
+                    {label}
                   </span>
                 </li>
               );
             })}
           </ol>
           <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1 border-t pt-3 text-sm">
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              Board status
+              <select
+                aria-label="Board status"
+                value={r.column}
+                onChange={(e) => changeColumn(e.target.value as Column)}
+                className="rounded border bg-card p-1 text-foreground"
+              >
+                {columns.map((c) => (
+                  <option key={c.name}>{c.name}</option>
+                ))}
+              </select>
+            </label>
             <span className="inline-flex items-center gap-1.5 text-waiting">
               <Hourglass className="h-3.5 w-3.5" />
               {r.status}
@@ -408,17 +469,19 @@ function Detail() {
           </div>
         </div>
 
-        <section className="mb-6 rounded-lg border bg-card p-4">
+        <section id="incident-property" className="mb-6 rounded-lg border bg-card p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-medium">Property</h2>
             <Link
               to="/workspace/$section"
               params={{ section: "properties" }}
+              search={r.propertyId ? { property: r.propertyId } : {}}
               className="text-sm text-primary underline"
             >
               View properties and people
             </Link>
           </div>
+          {r.propertyId && r.column !== "Completed" && <CorrectProperty requestId={id} />}
           {r.propertyId ? (
             <p className="mt-2 text-sm text-muted-foreground">
               {r.address} · All emails, quotes, appointments and notes on this event belong to this
@@ -468,88 +531,48 @@ function Detail() {
           )}
         </section>
 
+        {d && <CaseRecords requestId={id} completed={r.column === "Completed"} incident={d} />}
+        <IncidentActions
+          data={d}
+          analyzing={analyzing}
+          error={aiError}
+          onGenerate={() => void analyze()}
+          onRefresh={async () => {
+            await Promise.all([
+              refresh(),
+              queryClient.invalidateQueries({ queryKey: ["requests"] }),
+              queryClient.invalidateQueries({ queryKey: ["inbox"] }),
+              queryClient.invalidateQueries({ queryKey: ["follow-ups"] }),
+            ]);
+          }}
+          onAddQuote={() => {
+            setQuoteOpen(true);
+            document
+              .getElementById("incident-quotes")
+              ?.scrollIntoView({ behavior: "smooth", block: "center" });
+          }}
+          onAddPeople={() => {
+            setAdding(true);
+            document
+              .getElementById("incident-people")
+              ?.scrollIntoView({ behavior: "smooth", block: "start" });
+          }}
+          onLinkProperty={() =>
+            document
+              .getElementById("incident-property")
+              ?.scrollIntoView({ behavior: "smooth", block: "center" })
+          }
+        />
         <div className="grid gap-6 lg:grid-cols-3">
           <div className="space-y-6 lg:col-span-2">
-            <div className="rounded-lg border-2 border-ai/30 bg-ai-soft p-5">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-ai">
-                  <Sparkles className="h-4 w-4" />
-                  AI suggested next step
-                </div>
-                <button
-                  onClick={() => void analyze()}
-                  disabled={analyzing}
-                  className="flex items-center gap-1 rounded-md border bg-card px-2 py-1 text-xs hover:bg-muted disabled:opacity-60"
-                >
-                  <RefreshCw className={`h-3 w-3 ${analyzing ? "animate-spin" : ""}`} />
-                  {analyzing ? "Analysing…" : d?.ai ? "Regenerate" : "Generate"}
-                </button>
-              </div>
-              {d?.ai ? (
-                <>
-                  <p className="mt-3 text-sm text-muted-foreground">{d.ai.summary}</p>
-                  <div className="mt-3 text-lg font-semibold">{d.ai.nextStep}</div>
-                  <div className="mt-1 text-sm text-muted-foreground">
-                    Waiting on {d.ai.waitingOn} · suggested column: {d.ai.column}
-                  </div>
-                  <div className="mt-4 flex flex-wrap items-center gap-2">
-                    <button
-                      onClick={() => {
-                        const column = (columns.find((c) => c.name === d.ai?.column)?.name ??
-                          r.column) as Column;
-                        changeColumn(column, {
-                          nextAction: d.ai?.nextStep ?? r.nextAction,
-                          waitingOn: d.ai?.waitingOn ?? r.waitingOn,
-                        });
-                        notify("AI suggestion applied to the request");
-                      }}
-                      className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-                    >
-                      <Check className="h-4 w-4" />
-                      Apply to request
-                    </button>
-                    <span className="text-xs text-muted-foreground">
-                      Generated {formatWhen(d.ai.updatedAt)}. Nothing changes until you apply it.
-                    </span>
-                  </div>
-                </>
-              ) : (
-                <p className="mt-3 text-sm text-muted-foreground">
-                  {analyzing
-                    ? "Reading the emails and activity for this request…"
-                    : d && d.emails.length === 0
-                      ? "No emails are linked yet. Add the tenant, landlord and repair team below so their emails appear here, then the AI will suggest what to do next."
-                      : "Generate a summary and a recommended next step."}
-                </p>
-              )}
-              {aiError ? <p className="mt-2 text-xs text-destructive">{aiError}</p> : null}
-            </div>
-
-            <div className="rounded-lg border-2 border-primary/30 bg-primary-soft p-5">
-              <div className="text-xs font-semibold uppercase tracking-wide text-primary">
-                Current next action
-              </div>
-              <div className="mt-1 text-lg font-semibold">{r.nextAction}</div>
-              <div className="text-sm text-muted-foreground">Waiting on {r.waitingOn}</div>
-              <div className="mt-4 flex gap-2">
-                <button
-                  onClick={openReminder}
-                  className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-                >
-                  <Bell className="h-4 w-4" />
-                  Send Reminder
-                </button>
-              </div>
-            </div>
-
-            <div className="rounded-lg border bg-card p-5 shadow-card">
+            <div id="incident-quotes" className="rounded-lg border bg-card p-5 shadow-card">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="flex items-center gap-2 font-semibold">
                   <FileText className="h-4 w-4" />
                   Quotes
                 </h2>
                 <button
-                  disabled={!r.propertyId}
+                  disabled={!r.propertyId || r.column === "Completed"}
                   title={!r.propertyId ? "Link a property first" : undefined}
                   onClick={() => setQuoteOpen((v) => !v)}
                   className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
@@ -605,7 +628,8 @@ function Detail() {
                   >
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-medium">
-                        {q.supplier} · ${q.amount.toFixed(2)}
+                        #{q.id} · {q.supplier} · ${q.amount.toFixed(2)}{" "}
+                        {q.supersedesId ? `· Revises #${q.supersedesId}` : ""}
                       </div>
                       {q.description ? (
                         <div className="truncate text-xs text-muted-foreground">
@@ -613,21 +637,9 @@ function Detail() {
                         </div>
                       ) : null}
                     </div>
-                    {q.status === "Pending" ? (
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => void decide(q.id, "Approved")}
-                          className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
-                        >
-                          Approve
-                        </button>
-                        <button
-                          onClick={() => void decide(q.id, "Rejected")}
-                          className="rounded-md border px-3 py-1.5 text-xs"
-                        >
-                          Reject
-                        </button>
-                      </div>
+                    {r.column !== "Completed" && <ReviseQuote quote={q} requestId={id} />}
+                    {q.status === "Pending" && !q.supersededAt && r.column !== "Completed" ? (
+                      <QuoteDecisionButton quote={q} data={d!} requestId={id} />
                     ) : (
                       <span
                         className={`rounded px-2 py-0.5 text-xs font-medium ${q.status === "Approved" ? "bg-done-soft text-done" : "bg-muted text-muted-foreground"}`}
@@ -647,7 +659,7 @@ function Detail() {
                   Appointments
                 </h2>
                 <button
-                  disabled={!r.propertyId}
+                  disabled={!r.propertyId || r.column === "Completed"}
                   title={!r.propertyId ? "Link a property first" : undefined}
                   onClick={() => setApptOpen((v) => !v)}
                   className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
@@ -702,18 +714,15 @@ function Detail() {
                         {a.location ? ` · ${a.location}` : ""}
                       </div>
                     </div>
-                    <button
-                      onClick={() =>
-                        void deleteAppointment({ data: { id: a.id } }).then(() => {
-                          void queryClient.invalidateQueries({ queryKey: ["appointments"] });
-                          return refresh();
-                        })
-                      }
-                      className="rounded p-1 text-muted-foreground hover:bg-muted"
-                      aria-label={`Cancel ${a.title}`}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    {r.column !== "Completed" && !a.cancelledAt && (
+                      <RescheduleButton appointment={a} requestId={id} />
+                    )}
+                    {(r.column !== "Completed" || a.cancelledAt) && (
+                      <CancelVisit appointment={{ ...a, requestId: id }} onChanged={refresh} />
+                    )}
+                    {a.cancelReason && (
+                      <p className="text-xs text-muted-foreground">{a.cancelReason}</p>
+                    )}
                   </div>
                 ))}
               </div>
@@ -722,6 +731,25 @@ function Detail() {
             <div className="rounded-lg border bg-card p-5 shadow-card">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="font-semibold">Activity timeline</h2>
+                <select
+                  aria-label="Filter timeline"
+                  className="rounded border p-2 text-sm"
+                  value={timelineFilter}
+                  onChange={(e) => setTimelineFilter(e.target.value)}
+                >
+                  {[
+                    ["all", "All activity"],
+                    ["email", "Emails"],
+                    ["quote", "Quotes"],
+                    ["appointment", "Appointments"],
+                    ["note", "Notes"],
+                    ["status", "Status changes"],
+                  ].map(([v, l]) => (
+                    <option key={v} value={v}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
                 <button
                   onClick={() => setNoteOpen(true)}
                   className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
@@ -742,84 +770,92 @@ function Detail() {
                         : "Connect Gmail in the Unified Inbox and add the people involved to see their emails here."}
                     </li>
                   ) : null}
-                  {entries.map((t) => {
-                    const isMail = t.kind === "email-in" || t.kind === "email-out";
-                    const open = expanded === t.key;
-                    return (
-                      <li key={t.key} className="relative">
-                        <span
-                          className={`absolute -left-[31px] grid h-5 w-5 place-items-center rounded-full border bg-card ${
-                            t.kind === "status" ? "border-primary" : ""
-                          }`}
-                        >
-                          {t.kind === "email-out" ? (
-                            <Send className="h-3 w-3 text-primary" />
-                          ) : isMail ? (
-                            <Mail className="h-3 w-3 text-primary" />
-                          ) : t.kind === "note" ? (
-                            <StickyNote className="h-3 w-3 text-done" />
-                          ) : t.kind === "quote" ? (
-                            <FileText className="h-3 w-3 text-primary" />
-                          ) : t.kind === "appointment" ? (
-                            <CalendarDays className="h-3 w-3 text-primary" />
-                          ) : (
-                            <Flag className="h-3 w-3 text-primary" />
-                          )}
-                        </span>
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                          <span>{formatWhen(t.at)}</span>
-                          <span>·</span>
-                          <span>{t.who}</span>
-                          {isMail || t.kind === "note" ? (
-                            <span
-                              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${roleTone[t.role] ?? "bg-muted text-muted-foreground"}`}
-                            >
-                              {t.kind === "note" ? "Internal note" : t.role}
-                            </span>
+                  {entries
+                    .filter(
+                      (t) =>
+                        timelineFilter === "all" ||
+                        (timelineFilter === "email"
+                          ? t.kind.startsWith("email-")
+                          : t.kind === timelineFilter),
+                    )
+                    .map((t) => {
+                      const isMail = t.kind === "email-in" || t.kind === "email-out";
+                      const open = expanded === t.key;
+                      return (
+                        <li key={t.key} className="relative">
+                          <span
+                            className={`absolute -left-[31px] grid h-5 w-5 place-items-center rounded-full border bg-card ${
+                              t.kind === "status" ? "border-primary" : ""
+                            }`}
+                          >
+                            {t.kind === "email-out" ? (
+                              <Send className="h-3 w-3 text-primary" />
+                            ) : isMail ? (
+                              <Mail className="h-3 w-3 text-primary" />
+                            ) : t.kind === "note" ? (
+                              <StickyNote className="h-3 w-3 text-done" />
+                            ) : t.kind === "quote" ? (
+                              <FileText className="h-3 w-3 text-primary" />
+                            ) : t.kind === "appointment" ? (
+                              <CalendarDays className="h-3 w-3 text-primary" />
+                            ) : (
+                              <Flag className="h-3 w-3 text-primary" />
+                            )}
+                          </span>
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                            <span>{formatWhen(t.at)}</span>
+                            <span>·</span>
+                            <span>{t.who}</span>
+                            {isMail || t.kind === "note" ? (
+                              <span
+                                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${roleTone[t.role] ?? "bg-muted text-muted-foreground"}`}
+                              >
+                                {t.kind === "note" ? "Internal note" : t.role}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="text-sm font-medium">
+                            {isMail ? (t.kind === "email-out" ? "Sent: " : "") : ""}
+                            {t.title}
+                          </div>
+                          {isMail ? (
+                            <>
+                              <button
+                                onClick={() => setExpanded(open ? null : t.key)}
+                                className="mt-1 text-xs text-primary hover:underline"
+                              >
+                                {open ? "Hide email" : "Read email"}
+                              </button>
+                              {open ? (
+                                <p className="mt-2 whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-sm">
+                                  {t.body}
+                                </p>
+                              ) : null}
+                              {t.role === "Unassigned" && t.counterpart ? (
+                                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                                  Add {t.counterpart.email} as
+                                  {participantRoles.map((role) => (
+                                    <button
+                                      key={role}
+                                      onClick={() =>
+                                        void addSender(
+                                          role,
+                                          t.counterpart?.name ?? "",
+                                          t.counterpart?.email ?? "",
+                                        )
+                                      }
+                                      className="rounded border px-1.5 py-0.5 hover:bg-muted"
+                                    >
+                                      {role}
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </>
                           ) : null}
-                        </div>
-                        <div className="text-sm font-medium">
-                          {isMail ? (t.kind === "email-out" ? "Sent: " : "") : ""}
-                          {t.title}
-                        </div>
-                        {isMail ? (
-                          <>
-                            <button
-                              onClick={() => setExpanded(open ? null : t.key)}
-                              className="mt-1 text-xs text-primary hover:underline"
-                            >
-                              {open ? "Hide email" : "Read email"}
-                            </button>
-                            {open ? (
-                              <p className="mt-2 whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-sm">
-                                {t.body}
-                              </p>
-                            ) : null}
-                            {t.role === "Unassigned" && t.counterpart ? (
-                              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                                Add {t.counterpart.email} as
-                                {participantRoles.map((role) => (
-                                  <button
-                                    key={role}
-                                    onClick={() =>
-                                      void addSender(
-                                        role,
-                                        t.counterpart?.name ?? "",
-                                        t.counterpart?.email ?? "",
-                                      )
-                                    }
-                                    className="rounded border px-1.5 py-0.5 hover:bg-muted"
-                                  >
-                                    {role}
-                                  </button>
-                                ))}
-                              </div>
-                            ) : null}
-                          </>
-                        ) : null}
-                      </li>
-                    );
-                  })}
+                        </li>
+                      );
+                    })}
                   <li className="relative">
                     <span className="absolute -left-[31px] grid h-5 w-5 place-items-center rounded-full bg-waiting">
                       <Hourglass className="h-3 w-3 text-primary-foreground" />
@@ -833,7 +869,7 @@ function Detail() {
           </div>
 
           <div className="space-y-6">
-            <div className="space-y-3">
+            <div id="incident-people" className="space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="font-semibold">People involved</h2>
                 <button
@@ -987,7 +1023,7 @@ function Detail() {
           >
             <div className="flex items-center justify-between">
               <h2 className="font-semibold">Send email</h2>
-              <button type="button" onClick={() => setReminderOpen(false)} className="p-1">
+              <button type="button" onClick={closeReminder} className="p-1">
                 <X className="h-4 w-4" />
               </button>
             </div>
@@ -1006,7 +1042,10 @@ function Detail() {
                 type="email"
                 list="people-emails"
                 value={reminder.to}
-                onChange={(e) => setReminder({ ...reminder, to: e.target.value })}
+                onChange={(e) => {
+                  setReminderDirty(true);
+                  setReminder({ ...reminder, to: e.target.value });
+                }}
                 placeholder="To"
                 aria-label="To"
                 className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
@@ -1021,7 +1060,10 @@ function Detail() {
               <input
                 required
                 value={reminder.subject}
-                onChange={(e) => setReminder({ ...reminder, subject: e.target.value })}
+                onChange={(e) => {
+                  setReminderDirty(true);
+                  setReminder({ ...reminder, subject: e.target.value });
+                }}
                 placeholder="Subject"
                 aria-label="Subject"
                 className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:border-ring"
@@ -1029,15 +1071,84 @@ function Detail() {
               <textarea
                 required
                 value={reminder.body}
-                onChange={(e) => setReminder({ ...reminder, body: e.target.value })}
+                onChange={(e) => {
+                  setReminderDirty(true);
+                  setReminder({ ...reminder, body: e.target.value });
+                }}
                 aria-label="Message"
                 className="min-h-40 w-full rounded-md border p-3 text-sm outline-none focus:border-ring"
               />
             </div>
+            <AttachmentPicker
+              requestId={id}
+              value={reminderFiles}
+              onChange={(v) => {
+                setReminderFiles(v);
+                setReminderDirty(true);
+              }}
+              disabled={sending}
+            />
+            {reminderLeave && (
+              <div className="mt-4 rounded border bg-muted p-3">
+                <strong>Save your draft changes?</strong>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={sending}
+                    className="rounded border bg-card px-3 py-2 text-sm"
+                    onClick={async () => {
+                      setSending(true);
+                      try {
+                        await createContactDraft({
+                          data: {
+                            requestId: id,
+                            email: reminder.to,
+                            subject: reminder.subject,
+                            body: reminder.body,
+                            operationId: reminderOperation,
+                            attachmentIds: reminderFiles,
+                          },
+                        });
+                        setReminderOperation(crypto.randomUUID());
+                        setReminderDirty(false);
+                        setReminderLeave(false);
+                        setReminderOpen(false);
+                        await refresh();
+                        notify("Draft saved to the action plan. Nothing was sent.");
+                      } catch (e) {
+                        notify(e instanceof Error ? e.message : "Could not save draft");
+                      } finally {
+                        setSending(false);
+                      }
+                    }}
+                  >
+                    Save draft & close
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border bg-card px-3 py-2 text-sm"
+                    onClick={() => {
+                      setReminderDirty(false);
+                      setReminderLeave(false);
+                      setReminderOpen(false);
+                    }}
+                  >
+                    Discard changes
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border bg-card px-3 py-2 text-sm"
+                    onClick={() => setReminderLeave(false)}
+                  >
+                    Continue editing
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setReminderOpen(false)}
+                onClick={closeReminder}
                 className="rounded-md border px-4 py-2 text-sm"
               >
                 Cancel

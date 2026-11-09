@@ -105,6 +105,7 @@ export const sendEmail = createServerFn({ method: "POST" })
   .validator(
     z.object({
       operationId: z.string().uuid(),
+      attachmentIds: z.array(z.string().uuid()).max(5).optional(),
       to: z.string().trim().toLowerCase().email().max(200),
       subject: z.string().trim().min(1).max(300),
       body: z.string().trim().min(1).max(20000),
@@ -121,6 +122,7 @@ export const sendEmail = createServerFn({ method: "POST" })
     try {
       await gmail.sendMail(userId, getRequestUrl().origin, {
         operationId: data.operationId,
+        ...(data.attachmentIds ? { attachmentIds: data.attachmentIds } : {}),
         to: data.to,
         subject: data.subject,
         body: data.body,

@@ -90,7 +90,7 @@ export const updateProperty = createServerFn({ method: "POST" })
         .where(and(eq(repairRequests.userId, userId), eq(repairRequests.propertyId, id))),
     ]);
     const property = changed[0];
-    if (!property) throw new Error("Property not found");
+    if (!property || property.archivedAt) throw new Error("Choose an active property");
     // Existing event participants are historical snapshots and are not overwritten.
     return property;
   });
@@ -148,6 +148,7 @@ export const addAppointment = createServerFn({ method: "POST" })
           .where(and(eq(repairRequests.userId, userId), eq(repairRequests.id, data.requestId)))
       : [];
     if (data.requestId && !event) throw new Error("Event not found");
+    if (event?.boardColumn === "Completed") throw new Error("Reopen the event before booking.");
     if (event && !event.propertyId) throw new Error("Link the event to a property before booking");
     const propertyId = event?.propertyId ?? data.propertyId;
     if (!propertyId) throw new Error("Choose a property before booking an appointment");
@@ -157,7 +158,7 @@ export const addAppointment = createServerFn({ method: "POST" })
       .select()
       .from(properties)
       .where(and(eq(properties.userId, userId), eq(properties.id, propertyId)));
-    if (!property) throw new Error("Property not found");
+    if (!property || property.archivedAt) throw new Error("Choose an active property");
     await db.batch([
       db.insert(appointments).values({ userId, ...data, propertyId }),
       ...(data.requestId
@@ -176,16 +177,7 @@ export const addAppointment = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
-export const deleteAppointment = createServerFn({ method: "POST" })
-  .validator(z.object({ id: z.number().int() }))
-  .handler(async ({ data }) => {
-    const userId = await requireUserId();
-    const db = await database();
-    await db
-      .delete(appointments)
-      .where(and(eq(appointments.userId, userId), eq(appointments.id, data.id)));
-    return { ok: true as const };
-  });
+export { cancelVisit as deleteAppointment } from "./workflow-management.functions";
 
 // ---------- quotes
 export const addQuote = createServerFn({ method: "POST" })
@@ -205,6 +197,8 @@ export const addQuote = createServerFn({ method: "POST" })
       .from(repairRequests)
       .where(and(eq(repairRequests.userId, userId), eq(repairRequests.id, data.requestId)));
     if (!event?.propertyId) throw new Error("Link the event to a property before adding a quote");
+    if (event.boardColumn === "Completed")
+      throw new Error("Reopen the event before adding a quote.");
     const amountCents = Math.round(data.amount * 100);
     await db.insert(requestQuotes).values({
       userId,
@@ -226,30 +220,7 @@ export const addQuote = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
-export const decideQuote = createServerFn({ method: "POST" })
-  .validator(z.object({ id: z.number().int(), decision: z.enum(["Approved", "Rejected"]) }))
-  .handler(async ({ data }) => {
-    const userId = await requireUserId();
-    const db = await database();
-    const [quote] = await db
-      .select()
-      .from(requestQuotes)
-      .where(and(eq(requestQuotes.userId, userId), eq(requestQuotes.id, data.id)));
-    if (!quote) return { ok: false as const };
-    await db
-      .update(requestQuotes)
-      .set({ status: data.decision })
-      .where(and(eq(requestQuotes.userId, userId), eq(requestQuotes.id, data.id)));
-    await db.insert(requestEvents).values({
-      userId,
-      requestId: quote.requestId,
-      at: Date.now(),
-      kind: "quote",
-      text: `Quote from ${quote.supplier} ($${(quote.amountCents / 100).toFixed(2)}) ${data.decision.toLowerCase()}`,
-      actor: "Property Manager",
-    });
-    return { ok: true as const, requestId: quote.requestId };
-  });
+export { recordQuoteDecision as decideQuote } from "./case-workflow.functions";
 
 // ---------- contacts (everyone added to any request)
 export const listContacts = createServerFn({ method: "GET" }).handler(async () => {
@@ -348,12 +319,14 @@ export const getAnalytics = createServerFn({ method: "GET" }).handler(async () =
     .from(requestParticipants)
     .where(eq(requestParticipants.userId, userId));
   const sum = (status: string) =>
-    quotes.filter((q) => q.status === status).reduce((t, q) => t + q.amountCents, 0) / 100;
+    quotes
+      .filter((q) => !q.supersededAt && q.status === status)
+      .reduce((t, q) => t + q.amountCents, 0) / 100;
   return {
     emails30d: Number(mails?.n ?? 0),
     emailsLinked: Number(linked?.n ?? 0),
     contacts: Number(people?.n ?? 0),
-    quotesPending: quotes.filter((q) => q.status === "Pending").length,
+    quotesPending: quotes.filter((q) => !q.supersededAt && q.status === "Pending").length,
     quotesApprovedTotal: sum("Approved"),
   };
 });
@@ -391,3 +364,105 @@ export const loadSampleData = createServerFn({ method: "POST" }).handler(async (
   );
   return { ok: true as const };
 });
+
+// Compare current property contacts with active event snapshots without changing history.
+export const listPropertyContactChanges = createServerFn({ method: "GET" }).handler(async () => {
+  const userId = await requireUserId();
+  const db = await database();
+  const { propertyContacts } = await import("./property-contacts");
+  const [homes, events, people] = await Promise.all([
+    db.select().from(properties).where(eq(properties.userId, userId)),
+    db.select().from(repairRequests).where(eq(repairRequests.userId, userId)),
+    db.select().from(requestParticipants).where(eq(requestParticipants.userId, userId)),
+  ]);
+  return events
+    .filter((r) => r.propertyId && r.boardColumn !== "Completed")
+    .flatMap((r) => {
+      const home = homes.find((p) => p.id === r.propertyId);
+      if (!home) return [];
+      const current = people
+        .filter((p) => p.requestId === r.id && p.role !== "Repair Team")
+        .map(({ role, name, email }) => ({ role, name, email }));
+      const next = propertyContacts(home);
+      const same =
+        current.length === next.length &&
+        next.every((n) =>
+          current.some((c) => c.role === n.role && c.name === n.name && c.email === n.email),
+        );
+      return same
+        ? []
+        : [
+            {
+              requestId: r.id,
+              propertyId: home.id,
+              current,
+              next,
+              version: JSON.stringify({ current, next }),
+            },
+          ];
+    });
+});
+
+export const syncPropertyEventContacts = createServerFn({ method: "POST" })
+  .validator(z.object({ requestId, version: z.string() }))
+  .handler(async ({ data }) => {
+    const userId = await requireUserId();
+    const db = await database();
+    const changes = await listPropertyContactChanges();
+    const change = changes.find((c) => c.requestId === data.requestId);
+    if (!change || change.version !== data.version)
+      throw new Error("Contacts changed. Refresh and review again.");
+    if (new Set(change.next.map((p) => p.email)).size !== change.next.length)
+      throw new Error(
+        "Use a different contact email for each property role before updating this event.",
+      );
+    const teams = await db
+      .select()
+      .from(requestParticipants)
+      .where(
+        and(
+          eq(requestParticipants.userId, userId),
+          eq(requestParticipants.requestId, data.requestId),
+          eq(requestParticipants.role, "Repair Team"),
+        ),
+      );
+    if (teams.some((t) => change.next.some((p) => p.email === t.email)))
+      throw new Error(
+        "A property contact already belongs to the repair team. Review the event people first.",
+      );
+    // Conditional statements keep closed events untouched even if they close during confirmation.
+    const active = sql`EXISTS (SELECT 1 FROM repair_requests WHERE user_id=${userId} AND id=${data.requestId} AND board_column != 'Completed')`;
+    await db.batch([
+      db
+        .delete(requestParticipants)
+        .where(
+          and(
+            eq(requestParticipants.userId, userId),
+            eq(requestParticipants.requestId, data.requestId),
+            sql`${requestParticipants.role} != 'Repair Team'`,
+            active,
+          ),
+        ),
+      ...change.next.map((p) =>
+        db
+          .insert(requestParticipants)
+          .select(
+            sql`SELECT ${userId}, ${data.requestId}, ${p.role}, ${p.name}, ${p.email} WHERE ${active}`,
+          )
+          .onConflictDoUpdate({
+            target: [
+              requestParticipants.userId,
+              requestParticipants.requestId,
+              requestParticipants.email,
+            ],
+            set: { name: p.name, role: p.role },
+          }),
+      ),
+      db
+        .insert(requestEvents)
+        .select(
+          sql`SELECT NULL, ${userId}, ${data.requestId}, ${Date.now()}, 'note', ${`Property contacts updated after review. Previous: ${JSON.stringify(change.current)}. Current: ${JSON.stringify(change.next)}`}, 'Property Manager' WHERE ${active}`,
+        ),
+    ]);
+    return { ok: true };
+  });

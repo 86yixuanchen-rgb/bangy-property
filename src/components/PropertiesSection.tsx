@@ -1,4 +1,7 @@
-import { useState } from "react";
+import { archiveProperty } from "@/lib/workflow-management.functions";
+import { WorkflowDialog, button, primary } from "./case-workflow/CaseWorkflow";
+import { PropertyContact } from "./case-workflow/PropertyContact";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Building2, Plus, Search, Trash2 } from "lucide-react";
@@ -10,6 +13,8 @@ import {
   deleteProperty,
   listProperties,
   listAppointments,
+  listPropertyContactChanges,
+  syncPropertyEventContacts,
 } from "@/lib/workspace.functions";
 const inputClass =
   "h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:border-ring";
@@ -35,7 +40,18 @@ function SearchBox({
     </div>
   );
 }
-export function PropertiesSection() {
+export function PropertiesSection({
+  selectedPropertyId = null,
+  onSelectProperty,
+}: { selectedPropertyId?: number | null; onSelectProperty?: (id: number | null) => void } = {}) {
+  const [includeArchived, setIncludeArchived] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<{
+    id: number;
+    address: string;
+    archived: boolean;
+  } | null>(null);
+  const [archiveError, setArchiveError] = useState("");
+  const [archiveBusy, setArchiveBusy] = useState(false);
   const { requests, notify } = useWorkspace();
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -44,6 +60,12 @@ export function PropertiesSection() {
     isLoading,
     isError,
   } = useQuery({ queryKey: ["properties"], queryFn: () => listProperties() });
+  const { data: contactChanges = [] } = useQuery({
+    queryKey: ["property-contact-changes"],
+    queryFn: () => listPropertyContactChanges(),
+  });
+  const [syncing, setSyncing] = useState<string | null>(null);
+  const [contactError, setContactError] = useState("");
   const empty = () => ({
     address: "",
     managerName: user?.name ?? "",
@@ -59,6 +81,15 @@ export function PropertiesSection() {
     queryFn: () => listAppointments(),
   });
   const [query, setQuery] = useState("");
+  const [selectedId, setSelected] = useState<number | null>(selectedPropertyId);
+  useEffect(() => {
+    setSelected(selectedPropertyId);
+    setQuery("");
+  }, [selectedPropertyId]);
+  const setSelectedId = (id: number | null) => {
+    setSelected(id);
+    onSelectProperty?.(id);
+  };
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
@@ -69,25 +100,85 @@ export function PropertiesSection() {
       queryClient.invalidateQueries({ queryKey: ["properties"] }),
       queryClient.invalidateQueries({ queryKey: ["requests"] }),
       queryClient.invalidateQueries({ queryKey: ["contacts"] }),
+      queryClient.invalidateQueries({ queryKey: ["property-contact-changes"] }),
+      queryClient.invalidateQueries({ queryKey: ["incident"] }),
     ]);
-  const rows = data.filter((p) =>
-    [
-      p.address,
-      p.managerName,
-      p.ownerName,
-      p.tenantName,
-      p.managerEmail,
-      p.ownerEmail,
-      p.tenantEmail,
-    ]
-      .join(" ")
-      .toLowerCase()
-      .includes(query.toLowerCase()),
-  );
+  const rows = data
+    .filter((p) => selectedId === p.id || includeArchived || !p.archivedAt)
+    .filter((p) => selectedId === null || p.id === selectedId)
+    .filter((p) =>
+      [
+        p.address,
+        p.managerName,
+        p.ownerName,
+        p.tenantName,
+        p.managerEmail,
+        p.ownerEmail,
+        p.tenantEmail,
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(query.toLowerCase()),
+    );
   const unlinked = requests.filter((r) => !r.propertyId);
   return (
     <>
+      {archiveTarget && (
+        <WorkflowDialog
+          title={archiveTarget.archived ? "Restore property" : "Archive property"}
+          busy={archiveBusy}
+          onClose={() => setArchiveTarget(null)}
+        >
+          <div className="space-y-4">
+            <p>{archiveTarget.address}</p>
+            <p>
+              {archiveTarget.archived
+                ? "Restore this property to the active list."
+                : "Keep all event and contact history, but hide this property from new-event selection. Resolve or reassign open cases and cancel upcoming visits first."}
+            </p>
+            {archiveError && (
+              <p role="alert" className="text-destructive">
+                {archiveError}
+              </p>
+            )}
+            <button
+              className={primary}
+              disabled={archiveBusy}
+              onClick={async () => {
+                setArchiveBusy(true);
+                try {
+                  await archiveProperty({
+                    data: { id: archiveTarget.id, archive: !archiveTarget.archived },
+                  });
+                  await refresh();
+                  setArchiveTarget(null);
+                  notify("Property updated");
+                } catch (e) {
+                  setArchiveError(e instanceof Error ? e.message : "Could not update property");
+                } finally {
+                  setArchiveBusy(false);
+                }
+              }}
+            >
+              {archiveTarget.archived ? "Restore property" : "Confirm archive"}
+            </button>
+          </div>
+        </WorkflowDialog>
+      )}
+      {selectedId !== null && (
+        <button className="text-sm text-primary underline" onClick={() => setSelectedId(null)}>
+          ← All properties
+        </button>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
+        <label className="text-sm">
+          <input
+            type="checkbox"
+            checked={includeArchived}
+            onChange={(e) => setIncludeArchived(e.target.checked)}
+          />{" "}
+          Include archived
+        </label>
         <SearchBox value={query} onChange={setQuery} placeholder="Search properties or people…" />
         <button
           onClick={() => {
@@ -240,14 +331,29 @@ export function PropertiesSection() {
       <div className="space-y-4">
         {rows.map((p) => {
           const events = requests.filter((r) => r.propertyId === p.id);
-          const visits = bookings.filter((a) => a.propertyId === p.id);
+          const visits = bookings
+            .filter((a) => a.propertyId === p.id)
+            .sort((a, b) => a.startsAt - b.startsAt);
+          const upcoming = visits.filter((a) => !a.cancelledAt && a.startsAt >= Date.now());
+          const past = visits.filter((a) => a.cancelledAt || a.startsAt < Date.now());
+          const activeEvents = events.filter((r) => r.column !== "Completed");
+          const completedEvents = events.filter((r) => r.column === "Completed");
+          const changes = contactChanges.filter((c) => c.propertyId === p.id);
           return (
             <article key={p.id} className="rounded-lg border bg-card p-5 shadow-card">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
                   <h2 className="flex items-center gap-2 font-semibold">
                     <Building2 className="h-4 w-4 shrink-0 text-primary" />
-                    {p.address}
+                    <button
+                      className="text-left hover:text-primary"
+                      onClick={() => {
+                        setQuery("");
+                        setSelectedId(p.id);
+                      }}
+                    >
+                      {p.address} {p.archivedAt ? "· Archived" : ""}
+                    </button>
                   </h2>
                   {p.notes ? (
                     <p className="mt-1 whitespace-pre-wrap break-words text-sm text-muted-foreground">
@@ -256,6 +362,36 @@ export function PropertiesSection() {
                   ) : null}
                 </div>
                 <div className="flex gap-2">
+                  <button
+                    className={button}
+                    onClick={async () => {
+                      try {
+                        const url = new URL("/workspace/properties", window.location.origin);
+                        url.searchParams.set("property", String(p.id));
+                        await navigator.clipboard.writeText(url.href);
+                        notify("Property link copied. Sign-in is required to open it.");
+                      } catch {
+                        notify(
+                          "Could not copy the link. Open the property and copy the address bar.",
+                        );
+                      }
+                    }}
+                  >
+                    Copy link
+                  </button>
+                  <button
+                    className={button}
+                    onClick={() => {
+                      setArchiveTarget({
+                        id: p.id,
+                        address: p.address,
+                        archived: Boolean(p.archivedAt),
+                      });
+                      setArchiveError("");
+                    }}
+                  >
+                    {p.archivedAt ? "Restore" : "Archive"}
+                  </button>
                   <button
                     className="rounded-md border px-3 py-1.5 text-xs"
                     onClick={() => {
@@ -301,73 +437,248 @@ export function PropertiesSection() {
                   </button>
                 </div>
               </div>
-              <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
-                {[
-                  ["PM", p.managerName, p.managerEmail],
-                  ["Landlord", p.ownerName, p.ownerEmail],
-                  ["Tenant", p.tenantName, p.tenantEmail],
-                ].map(([role, name, email]) => (
-                  <div key={role} className="min-w-0">
-                    <dt className="text-xs text-muted-foreground">{role}</dt>
-                    <dd className="mt-1 break-words">
-                      {name || "Not recorded"}
-                      {email ? (
-                        <a
-                          href={`mailto:${email}`}
-                          className="block break-all text-xs text-primary"
-                        >
-                          {email}
-                        </a>
-                      ) : null}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-              <div className="mt-4 border-t pt-3">
-                <h3 className="text-sm font-medium">
-                  Events · {events.length} total ·{" "}
-                  {events.filter((r) => r.column !== "Completed").length} active
-                </h3>
-                {events.length ? (
-                  <div className="mt-2 space-y-2">
-                    {events.map((r) => (
-                      <Link
-                        key={r.id}
-                        to="/requests/$id"
-                        params={{ id: r.id }}
-                        className="flex flex-wrap justify-between gap-2 rounded-md bg-muted px-3 py-2 text-sm hover:bg-accent"
-                      >
-                        <span>
-                          {r.id} · {r.title}
-                        </span>
-                        <span className="text-muted-foreground">{r.column}</span>
-                      </Link>
+              {!p.managerEmail || !p.ownerEmail || !p.tenantEmail ? (
+                <div className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm">
+                  <strong>Missing contact details</strong>
+                  <p>
+                    {[
+                      !p.managerEmail && "PM email",
+                      !p.ownerEmail && "landlord email",
+                      !p.tenantEmail && "tenant email",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                  <button
+                    className="mt-1 text-primary underline"
+                    onClick={() => {
+                      setForm({
+                        address: p.address,
+                        managerName: p.managerName,
+                        managerEmail: p.managerEmail,
+                        ownerName: p.ownerName,
+                        ownerEmail: p.ownerEmail,
+                        tenantName: p.tenantName,
+                        tenantEmail: p.tenantEmail,
+                        notes: p.notes,
+                      });
+                      setEditing(p.id);
+                      setError("");
+                      setOpen(true);
+                      window.scrollTo({ top: 0, behavior: "smooth" });
+                    }}
+                  >
+                    Add missing details
+                  </button>
+                </div>
+              ) : null}
+              {selectedId === null ? (
+                <div className="mt-4 flex items-center justify-between text-sm">
+                  <span>
+                    {activeEvents.length} active events · {upcoming.length} upcoming visits ·{" "}
+                    {changes.length} contact updates
+                  </span>
+                  <button
+                    className="rounded border px-3 py-2 text-primary"
+                    onClick={() => {
+                      setQuery("");
+                      setSelectedId(p.id);
+                    }}
+                  >
+                    View property
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
+                    {[
+                      ["PM", p.managerName, p.managerEmail],
+                      ["Landlord", p.ownerName, p.ownerEmail],
+                      ["Tenant", p.tenantName, p.tenantEmail],
+                    ].map(([role, name, email]) => (
+                      <div key={role} className="min-w-0">
+                        <dt className="text-xs text-muted-foreground">{role}</dt>
+                        <dd className="mt-1 break-words">
+                          {name || "Not recorded"}
+                          {email ? (
+                            <>
+                              <span className="block break-all text-xs text-primary">{email}</span>
+                              <PropertyContact
+                                propertyId={p.id}
+                                email={email}
+                                name={name ?? role ?? "Contact"}
+                              />
+                            </>
+                          ) : null}
+                        </dd>
+                      </div>
                     ))}
-                  </div>
-                ) : (
-                  <p className="mt-2 text-sm text-muted-foreground">No events linked yet.</p>
-                )}
-                {visits.length ? (
-                  <div className="mt-4">
-                    <h3 className="text-sm font-medium">Appointments · {visits.length}</h3>
-                    <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
-                      {visits.map((a) => (
-                        <li key={a.id} className="break-words">
-                          {a.title} · {new Date(a.startsAt).toLocaleString()}
-                        </li>
+                  </dl>
+                  {changes.length > 0 ? (
+                    <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm">
+                      <h3 className="font-medium">
+                        Contact updates available · {changes.length} active events
+                      </h3>
+                      <p className="mt-1 text-muted-foreground">
+                        Review before replacing an event’s PM, landlord and tenant. Completed events
+                        keep their original contacts.
+                      </p>
+                      {changes.map((c) => (
+                        <details key={c.requestId} className="mt-3 rounded border bg-card p-3">
+                          <summary className="cursor-pointer font-medium">
+                            Review contacts · {c.requestId}
+                          </summary>
+                          <div className="my-3 grid grid-cols-2 gap-4">
+                            <div>
+                              <strong>Event contacts</strong>
+                              {c.current.map((person) => (
+                                <p key={person.email}>
+                                  {person.role} · {person.name} · {person.email}
+                                </p>
+                              ))}
+                              {!c.current.length && <p>None recorded</p>}
+                            </div>
+                            <div>
+                              <strong>Current property contacts</strong>
+                              {c.next.map((person) => (
+                                <p key={person.role}>
+                                  {person.role} · {person.name} · {person.email}
+                                </p>
+                              ))}
+                              {!c.next.length && (
+                                <p>No contacts — existing event contacts will be removed.</p>
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            disabled={!!syncing}
+                            className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50"
+                            onClick={async () => {
+                              setSyncing(c.requestId);
+                              setContactError("");
+                              try {
+                                await syncPropertyEventContacts({
+                                  data: { requestId: c.requestId, version: c.version },
+                                });
+                                await refresh();
+                                notify(
+                                  "Event contacts updated. Review its AI drafts before sending.",
+                                );
+                              } catch (e) {
+                                setContactError(
+                                  e instanceof Error ? e.message : "Could not update contacts.",
+                                );
+                              } finally {
+                                setSyncing(null);
+                              }
+                            }}
+                          >
+                            {syncing === c.requestId ? "Updating…" : "Confirm contact update"}
+                          </button>
+                        </details>
                       ))}
-                    </ul>
+                      {contactError && (
+                        <p role="alert" className="mt-2 text-destructive">
+                          {contactError}
+                        </p>
+                      )}
+                    </div>
+                  ) : null}
+                  <div className="mt-4 border-t pt-3">
+                    <h3 className="text-sm font-medium">
+                      Events · {events.length} total ·{" "}
+                      {events.filter((r) => r.column !== "Completed").length} active
+                    </h3>
+                    {events.length ? (
+                      <div className="mt-2 space-y-2">
+                        {activeEvents.map((r) => (
+                          <Link
+                            key={r.id}
+                            to="/requests/$id"
+                            params={{ id: r.id }}
+                            className="flex flex-wrap justify-between gap-2 rounded-md bg-muted px-3 py-2 text-sm hover:bg-accent"
+                          >
+                            <span>
+                              {r.id} · {r.title}
+                            </span>
+                            <span className="text-muted-foreground">{r.column}</span>
+                          </Link>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-sm text-muted-foreground">No events linked yet.</p>
+                    )}
+                    {completedEvents.length > 0 && (
+                      <details className="mt-3 rounded-md border p-3">
+                        <summary className="cursor-pointer text-sm">
+                          Completed events · {completedEvents.length}
+                        </summary>
+                        <div className="mt-2 space-y-2">
+                          {completedEvents.map((r) => (
+                            <Link
+                              key={r.id}
+                              to="/requests/$id"
+                              params={{ id: r.id }}
+                              className="block text-sm text-primary"
+                            >
+                              {r.id} · {r.title}
+                            </Link>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                    {!activeEvents.length && events.length > 0 && (
+                      <p className="mt-2 text-sm text-muted-foreground">No active events.</p>
+                    )}
+                    {visits.length ? (
+                      <div className="mt-4">
+                        <h3 className="text-sm font-medium">
+                          Upcoming appointments · {upcoming.length}
+                        </h3>
+                        <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+                          {upcoming.map((a) => (
+                            <li key={a.id} className="break-words">
+                              {a.title} {a.cancelledAt ? "· Cancelled" : ""} ·{" "}
+                              {new Date(a.startsAt).toLocaleString()}
+                            </li>
+                          ))}
+                        </ul>
+                        {!upcoming.length && (
+                          <p className="mt-2 text-sm text-muted-foreground">
+                            No upcoming appointments.
+                          </p>
+                        )}
+                        {past.length > 0 && (
+                          <details className="mt-3 text-sm">
+                            <summary className="cursor-pointer">
+                              Past & cancelled appointments · {past.length}
+                            </summary>
+                            {past
+                              .slice()
+                              .reverse()
+                              .map((a) => (
+                                <p key={a.id} className="mt-2 text-muted-foreground">
+                                  {a.title} {a.cancelledAt ? "· Cancelled" : ""} ·{" "}
+                                  {new Date(a.startsAt).toLocaleString()}
+                                </p>
+                              ))}
+                          </details>
+                        )}
+                      </div>
+                    ) : null}
+                    {!p.archivedAt && (
+                      <Link
+                        to="/"
+                        search={{ property: p.id }}
+                        className="mt-3 inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        Create event for this property
+                      </Link>
+                    )}
                   </div>
-                ) : null}
-                <Link
-                  to="/"
-                  search={{ property: p.id }}
-                  className="mt-3 inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Create event for this property
-                </Link>
-              </div>
+                </>
+              )}
             </article>
           );
         })}
