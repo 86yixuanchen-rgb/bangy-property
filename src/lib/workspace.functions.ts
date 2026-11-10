@@ -1,3 +1,4 @@
+import { appointmentWindow, noAppointmentConflict } from "./appointment-rules.server";
 import { createServerFn } from "@tanstack/react-start";
 import { auth } from "@clerk/tanstack-react-start/server";
 import { and, asc, eq, gte, sql } from "drizzle-orm";
@@ -11,6 +12,7 @@ import {
   requestEvents,
   requestParticipants,
   requestQuotes,
+  workspaceContacts,
 } from "@/db/schema";
 import { requests as sampleRequests } from "@/lib/data";
 
@@ -82,7 +84,13 @@ export const updateProperty = createServerFn({ method: "POST" })
       db
         .update(properties)
         .set(fields)
-        .where(and(eq(properties.userId, userId), eq(properties.id, id)))
+        .where(
+          and(
+            eq(properties.userId, userId),
+            eq(properties.id, id),
+            sql`${properties.archivedAt} IS NULL`,
+          ),
+        )
         .returning(),
       db
         .update(repairRequests)
@@ -133,6 +141,10 @@ export const addAppointment = createServerFn({ method: "POST" })
     z.object({
       title: z.string().trim().min(1).max(200),
       startsAt: z.number().int(),
+      endsAt: z.number().int().optional(),
+      attendeeEmails: z.array(z.string().trim().toLowerCase().email()).max(30).default([]),
+      notes: z.string().max(2000).default(""),
+      operationId: z.string().uuid().optional(),
       location: z.string().trim().max(300),
       requestId: requestId.nullable(),
       propertyId: z.number().int().positive().optional(),
@@ -159,22 +171,44 @@ export const addAppointment = createServerFn({ method: "POST" })
       .from(properties)
       .where(and(eq(properties.userId, userId), eq(properties.id, propertyId)));
     if (!property || property.archivedAt) throw new Error("Choose an active property");
-    await db.batch([
-      db.insert(appointments).values({ userId, ...data, propertyId }),
-      ...(data.requestId
-        ? [
-            db.insert(requestEvents).values({
-              userId,
-              requestId: data.requestId,
-              at: Date.now(),
-              kind: "appointment",
-              text: `Appointment booked: ${data.title} on ${new Date(data.startsAt).toLocaleString("en-AU")}`,
-              actor: "Property Manager",
-            }),
-          ]
-        : []),
-    ]);
-    return { ok: true as const };
+    const endsAt = appointmentWindow(data.startsAt, data.endsAt);
+    if (data.operationId) {
+      const [existing] = await db
+        .select()
+        .from(appointments)
+        .where(
+          and(eq(appointments.userId, userId), eq(appointments.operationId, data.operationId)),
+        );
+      if (existing) return { ok: true as const, id: existing.id };
+    }
+    const clear = noAppointmentConflict(
+      userId,
+      propertyId,
+      data.startsAt,
+      endsAt,
+      data.attendeeEmails,
+    );
+    const rows = await db
+      .insert(appointments)
+      .select(
+        sql`SELECT ${endsAt}, ${JSON.stringify(data.attendeeEmails)}, ${data.notes}, ${data.operationId ?? null}, NULL, NULL, NULL, ${userId}, ${data.requestId}, ${propertyId}, ${data.title}, ${data.startsAt}, ${data.location} WHERE ${clear}`,
+      )
+      .returning();
+    const saved = rows[0];
+    if (!saved)
+      throw new Error(
+        "Appointment conflict: this property or an attendee already has a booking at that time.",
+      );
+    if (data.requestId)
+      await db.insert(requestEvents).values({
+        userId,
+        requestId: data.requestId,
+        at: Date.now(),
+        kind: "appointment",
+        text: `Appointment booked: ${data.title} at ${new Date(data.startsAt).toISOString()}`,
+        actor: "Property Manager",
+      });
+    return { ok: true as const, id: saved.id };
   });
 
 export { cancelVisit as deleteAppointment } from "./workflow-management.functions";
@@ -200,15 +234,18 @@ export const addQuote = createServerFn({ method: "POST" })
     if (event.boardColumn === "Completed")
       throw new Error("Reopen the event before adding a quote.");
     const amountCents = Math.round(data.amount * 100);
-    await db.insert(requestQuotes).values({
-      userId,
-      requestId: data.requestId,
-      supplier: data.supplier,
-      amountCents,
-      description: data.description,
-      status: "Pending",
-      createdAt: Date.now(),
-    });
+    const [savedQuote] = await db
+      .insert(requestQuotes)
+      .values({
+        userId,
+        requestId: data.requestId,
+        supplier: data.supplier,
+        amountCents,
+        description: data.description,
+        status: "Pending",
+        createdAt: Date.now(),
+      })
+      .returning();
     await db.insert(requestEvents).values({
       userId,
       requestId: data.requestId,
@@ -217,7 +254,7 @@ export const addQuote = createServerFn({ method: "POST" })
       text: `Quote received from ${data.supplier}: $${(amountCents / 100).toFixed(2)}`,
       actor: "Property Manager",
     });
-    return { ok: true as const };
+    return { ok: true as const, id: savedQuote!.id };
   });
 
 export { recordQuoteDecision as decideQuote } from "./case-workflow.functions";
@@ -265,6 +302,22 @@ export const listContacts = createServerFn({ method: "GET" }).handler(async () =
     };
     entry.roles.add(p.role);
     byEmail.set(key, entry);
+  }
+  const directory = await db
+    .select()
+    .from(workspaceContacts)
+    .where(and(eq(workspaceContacts.userId, userId), sql`${workspaceContacts.archivedAt} IS NULL`));
+  for (const c of directory) {
+    const entry = byEmail.get(c.email) ?? {
+      name: c.name,
+      email: c.email,
+      roles: new Set<string>(),
+      requests: new Set<string>(),
+      emails: 0,
+    };
+    entry.name = c.name;
+    entry.roles.add(c.role);
+    byEmail.set(c.email, entry);
   }
   for (const m of mail) {
     const involved = new Set([m.from, ...m.to.split(",")]);

@@ -97,3 +97,21 @@ Migration `0011_workflow_management.sql` adds appointment cancellation history, 
 Cancelled visits remain visible and generate separate reviewable tenant/team notification drafts. Closure requires cancelling future visits and resolving cancellation drafts, or retaining visits with a recorded reason. Quote revisions start Pending and retain previous versions/decisions. Property correction previews affected contacts, future visits, quotes and drafts; sent messages and evidence stay with the case. Active cases and future visits block property archiving. Property detail URLs use `/workspace/properties?property=<id>` and require the owning account.
 
 Notifications are in-app and refresh every minute; reading them does not change Gmail read state. Timeline categories and dashboard follow-up/waiting filters operate on existing case records. Gmail attachment MIME follows the [Gmail sending guide](https://developers.google.com/workspace/gmail/api/guides/sending).
+
+### Assistant property creation
+
+The assistant receives the selected inbox email ID or event ID and reloads that context within the signed-in workspace. Explicit requests such as “帮我创建一下这个 property” open an editable property review card without needing an existing repair event or a working model connection. A conservative local address prefill uses the message/selected email; unrecognised addresses and unknown contacts remain editable or blank. Other assistant questions include the selected email body and recent conversation for model context.
+
+Only **Confirm create property** writes the property. Case-insensitive address matching reuses an existing active property without overwriting its contacts, including concurrent confirmations; archived matches require restoration. After creation, linking an eligible event is a separate explicit action. The sender is never assigned a tenant/landlord role solely because they sent the email. No additional database migration is required.
+
+## Unified workspace assistant (local implementation)
+
+The AI chat now prepares real operations across contacts, properties, events, internal appointments, email, quotes, case files, follow-ups and notifications. It uses the same authenticated business functions as the page controls. Directory contacts have their own records and can be linked to property roles or event participants; historical participant snapshots are retained.
+
+- Conversations, editable plans, dependencies and execution results persist in D1. The selected email/event/property/appointment is attached to the plan and does not change when the page selection changes.
+- AI responses only propose actions. `Confirm changes` / `确认执行` executes ordinary reviewed operations; email sending, cancellations, archiving, property corrections, decisions and closure require individual confirmation. `确认发送第 2 项` targets the latest plan's second action.
+- Each step is claimed once. Completed steps are not replayed; missing data and stale reviews are editable. Interrupted writes remain uncertain. Email delivery checks reuse the original operation and never resend an uncertain message.
+- `Add action` offers the same review cards without relying on model availability. File upload requires the user to choose a PNG/JPEG/WebP/PDF; the model never receives file contents. Existing case-file size/type checks still apply.
+- Appointments have explicit end times and attendees. Atomic overlap checks cover the same property or attendee. Rescheduling/cancellation prepares separate notification drafts; this is the site's internal calendar, not Google Calendar synchronization.
+
+Apply `0012_assistant_workspace.sql` to **local D1 only** for this preview. Configure a valid `DEEPSEEK_API_KEY` in the ignored `.env.local` and restart the dev process after changing it. Do not put secrets in frontend variables. No remote migration, GitHub push or Cloudflare deployment is part of this implementation.

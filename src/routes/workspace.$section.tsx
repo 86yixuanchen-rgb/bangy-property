@@ -1,3 +1,5 @@
+import { ContactsDirectory } from "@/components/ContactsDirectory";
+import { RescheduleButton } from "@/components/case-workflow/CaseWorkflow";
 import { CancelVisit } from "@/components/case-workflow/Management";
 import { PropertiesSection } from "@/components/PropertiesSection";
 import { createFileRoute, Link } from "@tanstack/react-router";
@@ -15,7 +17,6 @@ import {
   getAnalytics,
   getSettings,
   listAppointments,
-  listContacts,
 } from "@/lib/workspace.functions";
 
 export const Route = createFileRoute("/workspace/$section")({
@@ -41,8 +42,29 @@ function WorkspaceSection() {
   const { section } = Route.useParams();
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
+  const [selectedAppointment, setSelectedAppointment] = useState<{
+    id: number;
+    title: string;
+  } | null>(null);
+  const [assistantSignal, setAssistantSignal] = useState(0);
   return (
-    <AppShell>
+    <AppShell
+      openAssistantSignal={assistantSignal}
+      assistantContext={
+        selectedAppointment
+          ? { appointmentId: selectedAppointment.id }
+          : search.property
+            ? { propertyId: search.property }
+            : undefined
+      }
+      assistantContextLabel={
+        selectedAppointment
+          ? `Appointment: ${selectedAppointment.title}`
+          : search.property
+            ? `Selected property #${search.property}`
+            : undefined
+      }
+    >
       <div className="mx-auto max-w-6xl space-y-6 p-4 sm:p-6 lg:p-8">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{title(section)}</h1>
@@ -58,9 +80,14 @@ function WorkspaceSection() {
             }}
           />
         ) : section === "contacts" ? (
-          <ContactsSection />
+          <ContactsDirectory />
         ) : section === "calendar" ? (
-          <CalendarSection />
+          <CalendarSection
+            onAsk={(appointment) => {
+              setSelectedAppointment(appointment);
+              setAssistantSignal((s) => s + 1);
+            }}
+          />
         ) : section === "analytics" ? (
           <AnalyticsSection />
         ) : (
@@ -97,65 +124,7 @@ function SearchBox({
   );
 }
 
-function ContactsSection() {
-  const { data = [], isLoading } = useQuery({
-    queryKey: ["contacts"],
-    queryFn: () => listContacts(),
-    staleTime: 0,
-  });
-  const [query, setQuery] = useState("");
-  const rows = data.filter((c) =>
-    `${c.name} ${c.email} ${c.roles.join(" ")}`.toLowerCase().includes(query.toLowerCase()),
-  );
-  return (
-    <>
-      <SearchBox value={query} onChange={setQuery} placeholder="Search contacts…" />
-      <div className="overflow-hidden rounded-lg border bg-card shadow-card">
-        {isLoading ? <p className="p-6 text-sm text-muted-foreground">Loading…</p> : null}
-        {!isLoading && rows.length === 0 ? (
-          <p className="p-8 text-center text-sm text-muted-foreground">
-            {data.length === 0
-              ? "No contacts yet. People you add to a repair request appear here."
-              : "No contacts match your search."}
-          </p>
-        ) : null}
-        {rows.map((c) => (
-          <div
-            key={c.email}
-            className="grid gap-2 border-b p-4 last:border-0 sm:grid-cols-[1.5fr_1fr_1fr_auto] sm:items-center"
-          >
-            <div className="flex items-center gap-3 font-medium">
-              <Users className="h-4 w-4 shrink-0 text-primary" />
-              <span>
-                {c.name}
-                <span className="block text-xs font-normal text-muted-foreground">{c.email}</span>
-              </span>
-            </div>
-            <div className="text-sm text-muted-foreground">{c.roles.join(", ")}</div>
-            <div className="space-x-1 text-sm">
-              {c.requests.map((id) => (
-                <Link
-                  key={id}
-                  to="/requests/$id"
-                  params={{ id }}
-                  className="font-mono text-xs text-primary hover:underline"
-                >
-                  {id}
-                </Link>
-              ))}
-            </div>
-            <div className="flex items-center gap-1 text-sm text-muted-foreground">
-              <Mail className="h-3.5 w-3.5" />
-              {c.emails}
-            </div>
-          </div>
-        ))}
-      </div>
-    </>
-  );
-}
-
-function CalendarSection() {
+function CalendarSection({ onAsk }: { onAsk: (a: { id: number; title: string }) => void }) {
   const { requests, notify } = useWorkspace();
   const queryClient = useQueryClient();
   const { data = [], isLoading } = useQuery({
@@ -167,6 +136,8 @@ function CalendarSection() {
   const [form, setForm] = useState({
     title: "",
     when: "",
+    duration: "60",
+    attendees: "",
     location: "",
     requestId: "",
     propertyId: "",
@@ -191,7 +162,12 @@ function CalendarSection() {
             <div key={a.id} className="rounded-lg border bg-card p-4 shadow-card">
               <div className="flex items-start justify-between gap-2">
                 <CalendarDays className="h-5 w-5 text-primary" />
-                <CancelVisit appointment={a} onChanged={refresh} />
+                <div className="flex gap-2">
+                  {!a.cancelledAt ? (
+                    <RescheduleButton appointment={a} requestId={a.requestId ?? ""} />
+                  ) : null}
+                  <CancelVisit appointment={a} onChanged={refresh} />
+                </div>
               </div>
               <div className="mt-2 text-xs text-muted-foreground">
                 {new Date(a.startsAt).toLocaleString([], {
@@ -202,7 +178,14 @@ function CalendarSection() {
                   minute: "2-digit",
                 })}
               </div>
+              <div className="text-xs text-muted-foreground">
+                {Math.round(((a.endsAt ?? a.startsAt + 3600000) - a.startsAt) / 60000)} minutes ·{" "}
+                {JSON.parse(a.attendeeEmails).length} attendees
+              </div>
               <div className="mt-1 font-medium">{a.title}</div>
+              <button className="mt-2 text-xs text-primary" onClick={() => onAsk(a)}>
+                Ask AI about this appointment
+              </button>
               {a.location ? (
                 <div className="text-xs text-muted-foreground">{a.location}</div>
               ) : null}
@@ -242,19 +225,32 @@ function CalendarSection() {
               data: {
                 title: form.title,
                 startsAt,
+                endsAt: startsAt + Number(form.duration) * 60000,
+                attendeeEmails: form.attendees
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean),
                 location: form.location,
                 requestId: form.requestId || null,
                 propertyId: Number(form.propertyId),
               },
             })
               .then(() => {
-                setForm({ title: "", when: "", location: "", requestId: "", propertyId: "" });
+                setForm({
+                  title: "",
+                  when: "",
+                  duration: "60",
+                  attendees: "",
+                  location: "",
+                  requestId: "",
+                  propertyId: "",
+                });
                 setOpen(false);
                 notify("Appointment booked");
                 return refresh();
               })
-              .catch(() =>
-                notify("Could not book this appointment. Check the selected property and event."),
+              .catch((error: unknown) =>
+                notify(error instanceof Error ? error.message : "Could not book this appointment."),
               );
           }}
           className="grid gap-3 rounded-lg border bg-card p-4 shadow-card sm:grid-cols-2"
@@ -282,6 +278,29 @@ function CalendarSection() {
             aria-label="Location"
             className={inputClass}
           />
+          <label className="text-xs">
+            Duration (minutes)
+            <input
+              aria-label="Duration in minutes"
+              type="number"
+              min="15"
+              max="1440"
+              step="15"
+              value={form.duration}
+              onChange={(e) => setForm({ ...form, duration: e.target.value })}
+              className={inputClass}
+            />
+          </label>
+          <label className="text-xs">
+            Attendee emails
+            <input
+              aria-label="Attendee emails"
+              value={form.attendees}
+              onChange={(e) => setForm({ ...form, attendees: e.target.value })}
+              className={inputClass}
+              placeholder="Separate with commas"
+            />
+          </label>
           <div className="sm:col-span-2">
             <PropertySelect
               value={form.propertyId}

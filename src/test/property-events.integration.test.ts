@@ -1560,3 +1560,735 @@ describe("Workflow management and history", () => {
     expect(await api.listWaitingCases()).toEqual([]);
   });
 });
+
+describe("Assistant property creation from the selected email", () => {
+  const emptyFields = {
+    address: "24 Test Street, Sydney",
+    managerName: "",
+    managerEmail: "",
+    ownerName: "",
+    ownerEmail: "",
+    tenantName: "",
+    tenantEmail: "",
+    notes: "",
+  };
+  async function source(id = "assistant-source") {
+    await db.insert(schema.emailMessages).values({
+      userId: session.userId,
+      id,
+      threadId: id,
+      fromName: "Test sender",
+      fromEmail: "sender@example.test",
+      toEmails: "pm@example.test",
+      subject: "24 Test Street, Sydney - Please fix tap",
+      snippet: "Please let the landlord know",
+      body: "Please let the landlord know the tap is broken. Unique full email detail.",
+      receivedAt: Date.now(),
+      unread: true,
+      inInbox: true,
+      sent: false,
+      trashed: false,
+      requestId: null,
+    });
+  }
+  it("opens a grounded property review for an unlinked selected email without writing records", async () => {
+    await source();
+    const { askDeepSeek } = await import("@/lib/deepseek");
+    const result = await askDeepSeek({
+      data: { question: "帮我创建一下这个property", context: { emailId: "assistant-source" } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok || !result.propertyDraft) throw new Error("Expected property review");
+    expect(result.propertyDraft.fields).toMatchObject({
+      address: "24 Test Street, Sydney",
+      tenantEmail: "",
+      ownerEmail: "",
+    });
+    expect(result.propertyDraft.requestId).toBeNull();
+    expect(
+      await db.select().from(schema.properties).where(eq(schema.properties.userId, session.userId)),
+    ).toHaveLength(0);
+  });
+  it("passes the exact selected email body and recent conversation to the model", async () => {
+    await source();
+    aiFixture.content = JSON.stringify({
+      type: "message",
+      message: "This email concerns a tap repair.",
+    });
+    const { askDeepSeek } = await import("@/lib/deepseek");
+    await askDeepSeek({
+      data: {
+        question: "What does this refer to?",
+        context: { emailId: "assistant-source" },
+        history: [{ question: "Which email?", answer: "The selected email." }],
+      },
+    });
+    const payload = JSON.parse(aiFixture.requestBody);
+    const supplied = JSON.parse(payload.messages[1].content);
+    expect(supplied.selectedContext.email.body).toContain("Unique full email detail");
+    expect(supplied.selectedContext.email.id).toBe("assistant-source");
+    expect(supplied.history).toHaveLength(1);
+  });
+  it("turns model property intent into an executable review and never claims premature success", async () => {
+    await source();
+    aiFixture.content = JSON.stringify({ type: "property_draft", message: "Created successfully" });
+    const { askDeepSeek } = await import("@/lib/deepseek");
+    const result = await askDeepSeek({
+      data: { question: "Please go ahead with that", context: { emailId: "assistant-source" } },
+    });
+    expect(result.ok && result.answer).toContain("Nothing has been created");
+    expect(result.ok && result.propertyDraft?.fields.address).toBe(emptyFields.address);
+  });
+  it("rejects another user's selected source and cannot create using it", async () => {
+    await source();
+    session.userId = "outsider-property-assistant";
+    const { askDeepSeek } = await import("@/lib/deepseek");
+    const result = await askDeepSeek({
+      data: { question: "Create property", context: { emailId: "assistant-source" } },
+    });
+    expect(result.ok).toBe(false);
+    const { confirmAssistantProperty } = await import("@/lib/assistant-property.functions");
+    await expect(
+      confirmAssistantProperty({
+        data: { fields: emptyFields, sourceEmailId: "assistant-source", requestId: null },
+      }),
+    ).rejects.toThrow("unavailable");
+  });
+  it("creates once on confirmation, reuses concurrent retries and keeps existing contacts unchanged", async () => {
+    await source();
+    const { confirmAssistantProperty } = await import("@/lib/assistant-property.functions");
+    const data = {
+      fields: { ...emptyFields, tenantName: "Tenant", tenantEmail: "tenant@example.test" },
+      sourceEmailId: "assistant-source",
+      requestId: null,
+    };
+    const [a, b] = await Promise.all([
+      confirmAssistantProperty({ data }),
+      confirmAssistantProperty({ data }),
+    ]);
+    expect(a.property.id).toBe(b.property.id);
+    expect([a.created, b.created].filter(Boolean)).toHaveLength(1);
+    const again = await confirmAssistantProperty({
+      data: { ...data, fields: { ...emptyFields, address: " 24 TEST Street, Sydney " } },
+    });
+    expect(again.created).toBe(false);
+    expect(again.property.tenantEmail).toBe("tenant@example.test");
+    expect(
+      await db.select().from(schema.properties).where(eq(schema.properties.userId, session.userId)),
+    ).toHaveLength(1);
+  });
+  it("requires an address, validates contact pairs and refuses archived duplicates", async () => {
+    const { confirmAssistantProperty } = await import("@/lib/assistant-property.functions");
+    const data = { fields: emptyFields, sourceEmailId: null, requestId: null };
+    await expect(
+      confirmAssistantProperty({ data: { ...data, fields: { ...emptyFields, address: "" } } }),
+    ).rejects.toThrow("address");
+    await expect(
+      confirmAssistantProperty({
+        data: { ...data, fields: { ...emptyFields, ownerName: "Unknown" } },
+      }),
+    ).rejects.toThrow("both");
+    const result = await confirmAssistantProperty({ data });
+    await db
+      .update(schema.properties)
+      .set({ archivedAt: Date.now() })
+      .where(eq(schema.properties.id, result.property.id));
+    await expect(confirmAssistantProperty({ data })).rejects.toThrow("archived");
+  });
+  it("does not silently link a source event when a property is created", async () => {
+    await db.insert(schema.repairRequests).values({
+      userId: session.userId,
+      id: "REQ-777",
+      title: "Tap",
+      address: "Unconfirmed",
+      priority: "Medium",
+      boardColumn: "New",
+      status: "New",
+      waitingOn: "PM",
+      nextAction: "Review",
+      waiting: "",
+      lastUpdate: "",
+      sortOrder: 0,
+    });
+    const { confirmAssistantProperty } = await import("@/lib/assistant-property.functions");
+    await confirmAssistantProperty({
+      data: { fields: emptyFields, requestId: "REQ-777", sourceEmailId: null },
+    });
+    const [r] = await db
+      .select()
+      .from(schema.repairRequests)
+      .where(
+        and(
+          eq(schema.repairRequests.userId, session.userId),
+          eq(schema.repairRequests.id, "REQ-777"),
+        ),
+      );
+    expect(r?.propertyId).toBeNull();
+  });
+  it("honours a new explicit address without copying contacts from a different linked property", async () => {
+    const p = await property();
+    const r = await createRequestRecord(db, session.userId, {
+      propertyId: p.id,
+      title: "Repair",
+      priority: "Medium",
+    });
+    const { askDeepSeek } = await import("@/lib/deepseek");
+    const result = await askDeepSeek({
+      data: { question: "Create property at 77 New Road", context: { requestId: r.id } },
+    });
+    expect(result.ok && result.propertyDraft?.fields.address).toBe("77 New Road");
+    expect(result.ok && result.propertyDraft?.fields.ownerEmail).toBe("");
+  });
+});
+
+// Unified chat uses the same real business functions, with an isolated D1 and demo-only mail.
+import * as assistant from "@/lib/assistant-workspace.functions";
+import * as directory from "@/lib/contacts.functions";
+import { addAppointment, listContacts } from "@/lib/workspace.functions";
+import { confirmationCommand, validatePlan } from "@/lib/assistant-actions";
+vi.mock("@tanstack/react-start/server", () => ({
+  getRequestUrl: () => new URL("http://localhost:8080"),
+}));
+async function newPlan(
+  items: { action: string; args: Record<string, unknown>; dependsOn?: number[] }[],
+) {
+  const s = await assistant.createAssistantSession();
+  const p = await assistant.createAssistantPlan({
+    data: {
+      sessionId: s.id,
+      title: "Test plan",
+      context: {},
+      steps: items.map((i) => ({ ...i, dependsOn: i.dependsOn ?? [] })),
+    },
+  });
+  const current = async () =>
+    (await assistant.getAssistantConversation({ data: { sessionId: s.id } })).plans.find(
+      (x) => x.id === p.id,
+    )!;
+  return { sessionId: s.id, id: p.id, current };
+}
+async function confirm(
+  p: Awaited<ReturnType<typeof newPlan>>,
+  stepId?: string,
+  confirmation: "changes" | "send" | "individual" = "changes",
+) {
+  const state = await p.current();
+  return assistant.executeAssistantPlan({
+    data: { planId: p.id, revision: state.revision, ...(stepId ? { stepId } : {}), confirmation },
+  });
+}
+describe("Unified workspace assistant", () => {
+  it("persists review plans without creating records, then resolves ordered creation results", async () => {
+    const p = await newPlan([
+      { action: "property.create", args: input() },
+      {
+        action: "event.create",
+        args: { propertyId: "$1.propertyId", title: "Tap repair", priority: "High" },
+      },
+      {
+        action: "event.note",
+        args: { requestId: "$2.requestId", text: "Created from reviewed chat" },
+      },
+    ]);
+    expect(
+      (
+        await db
+          .select()
+          .from(schema.properties)
+          .where(eq(schema.properties.userId, session.userId))
+      ).length,
+    ).toBe(0);
+    await confirm(p);
+    const state = await p.current();
+    expect(state.steps.map((s) => ({ state: s.state, error: s.error }))).toEqual([
+      { state: "succeeded", error: null },
+      { state: "succeeded", error: null },
+      { state: "succeeded", error: null },
+    ]);
+    expect(state.state).toBe("completed");
+    expect(JSON.parse(state.steps[1]!.result!).requestId).toMatch(/^REQ-/);
+    await confirm(p);
+    expect(
+      (
+        await db
+          .select()
+          .from(schema.repairRequests)
+          .where(eq(schema.repairRequests.userId, session.userId))
+      ).length,
+    ).toBe(1);
+  });
+  it("keeps missing details retryable and continues independent work", async () => {
+    const p = await newPlan([
+      { action: "contact.save", args: { name: "Sam", role: "Tenant" } },
+      { action: "contact.associate", args: { id: "$1.id", propertyId: 999999, role: "Tenant" } },
+      { action: "property.create", args: input() },
+    ]);
+    await confirm(p);
+    let state = await p.current();
+    expect(state.steps.map((s) => s.state)).toEqual(["failed", "pending", "succeeded"]);
+    await assistant.editAssistantStep({
+      data: {
+        planId: p.id,
+        stepId: state.steps[0]!.id,
+        revision: state.revision,
+        args: { name: "Sam", email: "sam@example.test", role: "Tenant" },
+      },
+    });
+    await confirm(p, (await p.current()).steps[0]!.id);
+    state = await p.current();
+    expect(state.steps[0]!.state).toBe("succeeded");
+  });
+  it("rejects forward dependencies and invented fields", async () => {
+    expect(() =>
+      validatePlan([{ action: "property.create", args: { address: "$2.id" }, dependsOn: [] }]),
+    ).toThrow("earlier");
+    const s = await assistant.createAssistantSession();
+    await expect(
+      assistant.createAssistantPlan({
+        data: {
+          sessionId: s.id,
+          title: "Bad",
+          context: {},
+          steps: [{ action: "property.create", args: { secret: "x" }, dependsOn: [] }],
+        },
+      }),
+    ).rejects.toThrow("Unknown field");
+  });
+  it("prevents two confirmations from executing the same action", async () => {
+    const p = await newPlan([
+      { action: "contact.save", args: { name: "Sam", email: "sam@example.test", role: "Tenant" } },
+    ]);
+    const data = { planId: p.id, revision: 1, confirmation: "changes" as const };
+    const results = await Promise.allSettled([
+      assistant.executeAssistantPlan({ data }),
+      assistant.executeAssistantPlan({ data }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(await directory.listDirectoryContacts()).toHaveLength(1);
+  });
+  it("requires re-review if the target changes and rejects stale plan revisions", async () => {
+    const prop = await property();
+    const p = await newPlan([
+      { action: "property.update", args: { id: prop.id, ...input(), notes: "Reviewed" } },
+    ]);
+    await db
+      .update(schema.properties)
+      .set({ notes: "Changed elsewhere" })
+      .where(eq(schema.properties.id, prop.id));
+    await confirm(p);
+    let state = await p.current();
+    expect(state.steps[0]!.state).toBe("failed");
+    expect(state.steps[0]!.error).toContain("changed");
+    await expect(
+      assistant.executeAssistantPlan({
+        data: { planId: p.id, revision: 1, confirmation: "changes" },
+      }),
+    ).rejects.toThrow("changed");
+    await assistant.editAssistantStep({
+      data: { planId: p.id, stepId: state.steps[0]!.id, revision: state.revision },
+    });
+    await confirm(p);
+    state = await p.current();
+    expect(state.steps[0]!.state).toBe("succeeded");
+  });
+  it("scopes conversations, searches and target records to the signed-in user", async () => {
+    const prop = await property();
+    const p = await newPlan([{ action: "property.update", args: { id: prop.id, ...input() } }]);
+    session.userId = "foreign-" + counter;
+    await expect(p.current()).rejects.toThrow("not found");
+    await expect(confirm(p)).rejects.toThrow();
+    const foreign = await newPlan([
+      { action: "property.update", args: { id: prop.id, ...input() } },
+    ]);
+    await confirm(foreign);
+    expect((await foreign.current()).steps[0]!.state).toBe("failed");
+    expect(await assistant.listAssistantSessions()).toHaveLength(1);
+  });
+  it("never sends during bulk confirmation and sends a reviewed demo email once", async () => {
+    await db
+      .insert(schema.gmailAccounts)
+      .values({ userId: session.userId, email: "pm@example.test", refreshToken: "demo-account" });
+    const p = await newPlan([
+      {
+        action: "email.send",
+        args: {
+          to: "tenant@example.test",
+          subject: "Demo appointment",
+          body: "Test only",
+          requestId: null,
+        },
+      },
+      { action: "contact.save", args: { name: "Sam", email: "sam@example.test", role: "Tenant" } },
+    ]);
+    await confirm(p);
+    let state = await p.current();
+    expect(state.steps[0]!.state).toBe("pending");
+    expect(
+      await db
+        .select()
+        .from(schema.mailSendOperations)
+        .where(eq(schema.mailSendOperations.userId, session.userId)),
+    ).toHaveLength(0);
+    await confirm(p, state.steps[0]!.id, "send");
+    state = await p.current();
+    expect(state.steps[0]!.error).toBeNull();
+    expect(state.steps[0]!.state).toBe("succeeded");
+    await confirm(p, state.steps[0]!.id, "send");
+    expect(
+      await db
+        .select()
+        .from(schema.mailSendOperations)
+        .where(eq(schema.mailSendOperations.userId, session.userId)),
+    ).toHaveLength(1);
+  });
+  it("recognizes only exact confirmation commands", () => {
+    expect(confirmationCommand("好")).toBeNull();
+    expect(confirmationCommand("确认执行")).toEqual({ kind: "bulk" });
+    expect(confirmationCommand("确认发送第 3 项")).toEqual({ kind: "send", position: 3 });
+    expect(confirmationCommand("邮件里说确认发送第3项")).toBeNull();
+  });
+  it("stores an email draft in the real event without sending", async () => {
+    const prop = await property();
+    const event = await createRequestRecord(db, session.userId, {
+      propertyId: prop.id,
+      title: "Repair",
+      priority: "High",
+    });
+    const p = await newPlan([
+      {
+        action: "email.draft",
+        args: {
+          requestId: event.id,
+          to: "tenant@example.test",
+          subject: "Repair update",
+          body: "We are reviewing this.",
+        },
+      },
+    ]);
+    await confirm(p);
+    const state = await p.current();
+    expect(state.steps[0]!.state, state.steps[0]!.error ?? "").toBe("succeeded");
+    const actionId = JSON.parse(state.steps[0]!.result!).actionId;
+    expect(
+      (
+        await db.select().from(schema.requestActions).where(eq(schema.requestActions.id, actionId))
+      )[0]!.state,
+    ).toBe("pending");
+  });
+  it("allows contact creation without an event and archives without deleting history", async () => {
+    const prop = await property();
+    const c = await directory.saveDirectoryContact({
+      data: { name: "New tenant", email: "new@example.test", role: "Tenant" },
+    });
+    await directory.associateContact({
+      data: { id: c.contact.id, propertyId: prop.id, role: "Tenant" },
+    });
+    const event = await createRequestRecord(db, session.userId, {
+      propertyId: prop.id,
+      title: "Repair",
+      priority: "High",
+    });
+    await directory.archiveDirectoryContact({ data: { id: c.contact.id, archive: true } });
+    expect(
+      (
+        await db
+          .select()
+          .from(schema.requestParticipants)
+          .where(
+            and(
+              eq(schema.requestParticipants.userId, session.userId),
+              eq(schema.requestParticipants.requestId, event.id),
+            ),
+          )
+      ).some((r) => r.email === "new@example.test"),
+    ).toBe(true);
+    await expect(
+      directory.saveDirectoryContact({
+        data: { name: "Duplicate", email: "new@example.test", role: "Tenant" },
+      }),
+    ).rejects.toThrow("archived");
+  });
+  it("reuses duplicate contact emails and appears in the existing contact list", async () => {
+    const a = await directory.saveDirectoryContact({
+      data: { name: "Sam", email: "SAM@example.test", role: "Tenant" },
+    });
+    const b = await directory.saveDirectoryContact({
+      data: { name: "Other", email: "sam@example.test", role: "Landlord" },
+    });
+    expect(a.contact.id).toBe(b.contact.id);
+    expect(b.contact.name).toBe("Sam");
+    expect((await listContacts()).some((c) => c.email === "sam@example.test")).toBe(true);
+  });
+  it("atomically rejects overlapping property appointments, but permits adjacent bookings", async () => {
+    const prop = await property();
+    const start = Date.now() + 86400000;
+    const data = {
+      title: "Visit",
+      propertyId: prop.id,
+      requestId: null,
+      startsAt: start,
+      endsAt: start + 3600000,
+      location: prop.address,
+    };
+    const results = await Promise.allSettled([addAppointment({ data }), addAppointment({ data })]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    await expect(
+      addAppointment({ data: { ...data, startsAt: start + 3600000, endsAt: start + 7200000 } }),
+    ).resolves.toHaveProperty("id");
+  });
+  it("checks shared attendees across properties and ignores cancelled visits", async () => {
+    const prop = await property();
+    const other = await property();
+    const start = Date.now() + 86400000;
+    const data = {
+      title: "Visit",
+      requestId: null,
+      startsAt: start,
+      endsAt: start + 3600000,
+      location: "Home",
+      attendeeEmails: ["repair@example.test"],
+    };
+    const a = await addAppointment({ data: { ...data, propertyId: prop.id } });
+    await expect(addAppointment({ data: { ...data, propertyId: other.id } })).rejects.toThrow(
+      "conflict",
+    );
+    await db
+      .update(schema.appointments)
+      .set({ cancelledAt: Date.now() })
+      .where(eq(schema.appointments.id, a.id));
+    await expect(
+      addAppointment({ data: { ...data, propertyId: other.id } }),
+    ).resolves.toHaveProperty("id");
+  });
+  it("converts an interrupted mutation to uncertain and never retries automatically", async () => {
+    const p = await newPlan([
+      { action: "contact.save", args: { name: "Sam", email: "sam@example.test", role: "Tenant" } },
+    ]);
+    const s = (await p.current()).steps[0]!;
+    await db
+      .update(schema.assistantSteps)
+      .set({ state: "running", startedAt: Date.now() - 180000 })
+      .where(eq(schema.assistantSteps.id, s.id));
+    await db
+      .update(schema.assistantPlans)
+      .set({ state: "running", lockedAt: Date.now() - 180000 })
+      .where(eq(schema.assistantPlans.id, p.id));
+    expect((await p.current()).steps[0]!.state).toBe("uncertain");
+    await confirm(p);
+    expect(await directory.listDirectoryContacts()).toHaveLength(0);
+  });
+  it("keeps in-progress plan locked during polling before a step starts", async () => {
+    const p = await newPlan([
+      { action: "contact.save", args: { name: "Sam", email: "sam@example.test", role: "Tenant" } },
+    ]);
+    await db
+      .update(schema.assistantPlans)
+      .set({ state: "running", lockedAt: Date.now() })
+      .where(eq(schema.assistantPlans.id, p.id));
+    expect((await p.current()).state).toBe("running");
+    await expect(confirm(p)).rejects.toThrow("executing");
+  });
+  it("turns a mocked AI proposal into review cards, without performing the write", async () => {
+    aiFixture.content = JSON.stringify({
+      type: "plan",
+      title: "Create contact",
+      answer: "Ready to review",
+      steps: [
+        {
+          action: "contact.save",
+          args: { name: "Sam", email: "sam@example.test", role: "Tenant" },
+        },
+      ],
+    });
+    const s = await assistant.createAssistantSession();
+    await assistant.askWorkspaceAssistant({
+      data: { sessionId: s.id, question: "创建联系人 Sam", context: {} },
+    });
+    const conversation = await assistant.getAssistantConversation({ data: { sessionId: s.id } });
+    expect(conversation.plans).toHaveLength(1);
+    expect(conversation.plans[0]!.steps[0]!.state).toBe("pending");
+    expect(await directory.listDirectoryContacts()).toHaveLength(0);
+    expect(aiFixture.requestBody).toContain("UNTRUSTED DATA");
+  });
+});
+
+describe("Assistant dependency review and delivery", () => {
+  it("rechecks existing targets even when another argument references an earlier result", async () => {
+    const home = await property();
+    const p = await newPlan([
+      { action: "contact.save", args: { name: "Sam", email: "sam@example.test", role: "Tenant" } },
+      { action: "contact.associate", args: { id: "$1.id", propertyId: home.id, role: "Tenant" } },
+    ]);
+    await db
+      .update(schema.properties)
+      .set({ tenantName: "Changed", tenantEmail: "changed@example.test" })
+      .where(eq(schema.properties.id, home.id));
+    await confirm(p);
+    const state = await p.current();
+    expect(state.steps[0]!.state).toBe("succeeded");
+    expect(state.steps[1]!.state).toBe("failed");
+    expect(state.steps[1]!.error).toContain("changed");
+  });
+  it("allows a declared dependent event to inherit contacts changed by its own plan", async () => {
+    const home = await property();
+    const contact = await directory.saveDirectoryContact({
+      data: { name: "Sam", email: "sam@example.test", role: "Tenant" },
+    });
+    const p = await newPlan([
+      {
+        action: "contact.associate",
+        args: { id: contact.contact.id, propertyId: home.id, role: "Tenant" },
+      },
+      {
+        action: "event.create",
+        args: { propertyId: home.id, title: "Tap", priority: "High" },
+        dependsOn: [1],
+      },
+    ]);
+    await confirm(p);
+    const state = await p.current();
+    expect(state.steps.map((s) => ({ state: s.state, error: s.error }))).toEqual([
+      { state: "succeeded", error: null },
+      { state: "succeeded", error: null },
+    ]);
+    const eventId = JSON.parse(state.steps[1]!.result!).requestId;
+    expect(
+      (
+        await db
+          .select()
+          .from(schema.requestParticipants)
+          .where(
+            and(
+              eq(schema.requestParticipants.userId, session.userId),
+              eq(schema.requestParticipants.requestId, eventId),
+            ),
+          )
+      ).some((p) => p.email === "sam@example.test"),
+    ).toBe(true);
+  });
+  it("sends an event draft through existing action locks after explicit review", async () => {
+    await db
+      .insert(schema.gmailAccounts)
+      .values({ userId: session.userId, email: "pm@example.test", refreshToken: "demo-account" });
+    const home = await property();
+    const event = await createRequestRecord(db, session.userId, {
+      propertyId: home.id,
+      title: "Tap",
+      priority: "High",
+    });
+    const p = await newPlan([
+      {
+        action: "email.draft",
+        args: {
+          requestId: event.id,
+          to: "tenant@example.test",
+          subject: "Notice",
+          body: "Test only",
+        },
+      },
+      {
+        action: "action.send",
+        args: { id: "$1.id", to: "tenant@example.test", subject: "Notice", body: "Test only" },
+      },
+    ]);
+    await confirm(p);
+    let state = await p.current();
+    expect(state.steps[1]!.state).toBe("pending");
+    await confirm(p, state.steps[1]!.id, "send");
+    state = await p.current();
+    expect(state.steps[1]!.error).toBeNull();
+    expect(state.steps[1]!.state).toBe("succeeded");
+  });
+  it("does not allow an edited stale plan to run", async () => {
+    const p = await newPlan([
+      { action: "contact.save", args: { name: "Sam", email: "sam@example.test", role: "Tenant" } },
+    ]);
+    const old = await p.current();
+    await assistant.editAssistantStep({
+      data: {
+        planId: p.id,
+        stepId: old.steps[0]!.id,
+        revision: 1,
+        args: { name: "Sam new", email: "sam@example.test", role: "Tenant" },
+      },
+    });
+    await expect(
+      assistant.executeAssistantPlan({
+        data: { planId: p.id, revision: 1, confirmation: "changes" },
+      }),
+    ).rejects.toThrow("changed");
+    await confirm(p);
+    expect((await directory.listDirectoryContacts())[0]!.name).toBe("Sam new");
+  });
+});
+
+describe("Assistant uncertain email recovery", () => {
+  it("reconciles a previously sent operation without sending it again", async () => {
+    await db
+      .insert(schema.gmailAccounts)
+      .values({ userId: session.userId, email: "pm@example.test", refreshToken: "demo-account" });
+    const p = await newPlan([
+      { action: "email.send", args: { to: "tenant@example.test", subject: "Once", body: "Test" } },
+    ]);
+    const s = (await p.current()).steps[0]!;
+    await confirm(p, s.id, "send");
+    expect((await p.current()).steps[0]!.state).toBe("succeeded");
+    await db
+      .update(schema.assistantSteps)
+      .set({ state: "uncertain" })
+      .where(eq(schema.assistantSteps.id, s.id));
+    await assistant.checkAssistantDelivery({ data: { planId: p.id, stepId: s.id } });
+    expect((await p.current()).steps[0]!.state).toBe("succeeded");
+    expect(
+      await db
+        .select()
+        .from(schema.mailSendOperations)
+        .where(eq(schema.mailSendOperations.userId, session.userId)),
+    ).toHaveLength(1);
+  });
+  it("never sends when a delivery check has no original send operation", async () => {
+    const p = await newPlan([
+      {
+        action: "email.send",
+        args: { to: "tenant@example.test", subject: "Not sent", body: "Test" },
+      },
+    ]);
+    const s = (await p.current()).steps[0]!;
+    await db
+      .update(schema.assistantSteps)
+      .set({ state: "uncertain" })
+      .where(eq(schema.assistantSteps.id, s.id));
+    await assistant.checkAssistantDelivery({ data: { planId: p.id, stepId: s.id } });
+    expect((await p.current()).steps[0]!.state).toBe("failed");
+    expect(
+      await db
+        .select()
+        .from(schema.mailSendOperations)
+        .where(eq(schema.mailSendOperations.userId, session.userId)),
+    ).toHaveLength(0);
+  });
+});
+
+it("runs read-only AI plans immediately without confirming or executing other pending writes", async () => {
+  const p = await newPlan([
+    {
+      action: "contact.save",
+      args: { name: "Pending", email: "pending@example.test", role: "Tenant" },
+    },
+  ]);
+  aiFixture.content = JSON.stringify({
+    type: "plan",
+    title: "Open calendar",
+    answer: "Opening the calendar",
+    steps: [{ action: "workspace.open", args: { page: "calendar" } }],
+  });
+  await assistant.askWorkspaceAssistant({
+    data: { sessionId: p.sessionId, question: "Open calendar", context: {} },
+  });
+  const chat = await assistant.getAssistantConversation({ data: { sessionId: p.sessionId } });
+  const opened = chat.plans.find((p) => p.title === "Open calendar")!;
+  expect(opened.steps[0]!.state).toBe("succeeded");
+  expect(JSON.parse(opened.steps[0]!.result!).href).toBe("/workspace/calendar");
+  expect((await p.current()).steps[0]!.state).toBe("pending");
+  expect(await directory.listDirectoryContacts()).toHaveLength(0);
+});

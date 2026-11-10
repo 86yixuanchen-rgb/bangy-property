@@ -1,3 +1,4 @@
+import { appointmentWindow, noAppointmentConflict } from "./appointment-rules.server";
 import { resolveAttachments } from "./mail-attachments.server";
 import { createServerFn } from "@tanstack/react-start";
 import { auth } from "@clerk/tanstack-react-start/server";
@@ -419,6 +420,10 @@ export const rescheduleVisit = createServerFn({ method: "POST" })
       id: z.number().int(),
       previousStart: z.number().int(),
       startsAt: z.number().int(),
+      endsAt: z.number().int().optional(),
+      attendeeEmails: z.array(z.string().trim().toLowerCase().email()).max(30).optional(),
+      title: z.string().trim().min(1).max(200).optional(),
+      notes: z.string().max(2000).optional(),
       location: z.string().trim().min(1).max(300),
       reason: z.string().trim().min(3).max(1000),
     }),
@@ -429,24 +434,41 @@ export const rescheduleVisit = createServerFn({ method: "POST" })
       .select()
       .from(appointments)
       .where(and(eq(appointments.userId, userId), eq(appointments.id, data.id)));
-    if (!a?.requestId) throw new Error("Select an appointment linked to an event.");
-    await event(db, userId, a.requestId);
+    if (!a?.propertyId) throw new Error("Select a property appointment.");
+    if (a.requestId) await event(db, userId, a.requestId);
     if (a.cancelledAt)
       throw new Error("Cancelled appointments cannot be rescheduled. Book a new visit.");
     if (data.startsAt <= Date.now()) throw new Error("Choose a future appointment time.");
+    const endsAt = appointmentWindow(
+      data.startsAt,
+      data.endsAt ?? data.startsAt + ((a.endsAt ?? a.startsAt + 3600000) - a.startsAt),
+    );
+    const attendees = data.attendeeEmails ?? (JSON.parse(a.attendeeEmails) as string[]);
     const [updated] = await db
       .update(appointments)
-      .set({ startsAt: data.startsAt, location: data.location })
+      .set({
+        startsAt: data.startsAt,
+        endsAt,
+        attendeeEmails: JSON.stringify(attendees),
+        location: data.location,
+        ...(data.title ? { title: data.title } : {}),
+        ...(data.notes !== undefined ? { notes: data.notes } : {}),
+      })
       .where(
         and(
           eq(appointments.userId, userId),
           eq(appointments.id, a.id),
           eq(appointments.startsAt, data.previousStart),
+          noAppointmentConflict(userId, a.propertyId, data.startsAt, endsAt, attendees, a.id),
           sql`${appointments.cancelledAt} IS NULL`,
         ),
       )
       .returning();
-    if (!updated) throw new Error("Appointment changed. Refresh before rescheduling.");
+    if (!updated)
+      throw new Error(
+        "Appointment changed or conflicts with another booking. Refresh before rescheduling.",
+      );
+    if (!a.requestId) return { ok: true, drafts: 0 };
     await db
       .update(requestActions)
       .set({ active: false, followUpAt: null })

@@ -378,6 +378,7 @@ export async function sendMail(
     requestId: string | null;
     threadId?: string;
     operationId?: string;
+    reconcileOnly?: boolean;
     attachmentIds?: string[];
   },
 ) {
@@ -410,6 +411,10 @@ export async function sendMail(
     eq(mailSendOperations.operationId, operationId),
   );
   const [priorOperation] = await db.select().from(mailSendOperations).where(condition);
+  if (input.reconcileOnly && (!priorOperation || priorOperation.state === "failed"))
+    throw new SendUncertain(
+      "No pending delivery to reconcile. Review the draft before a new send attempt.",
+    );
   const files = priorOperation
     ? []
     : await resolveAttachments(db, userId, input.requestId, attachmentIds);
@@ -443,6 +448,8 @@ export async function sendMail(
   )
     throw new Error("Send operation does not match this message or mailbox");
   if (!claimed.length && operation.state === "failed") {
+    if (input.reconcileOnly)
+      throw new SendUncertain("The send failed. Review the draft before retrying.");
     const retry = await db
       .update(mailSendOperations)
       .set({ state: "sending" })

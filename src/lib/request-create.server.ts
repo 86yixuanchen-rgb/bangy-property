@@ -96,7 +96,10 @@ export async function linkRequestToProperty(
     .select()
     .from(repairRequests)
     .where(and(eq(repairRequests.userId, userId), eq(repairRequests.id, requestId)));
-  if (!property || !request) throw new Error("Property or request not found");
+  if (!property || property.archivedAt || !request)
+    throw new Error("Active property or request not found");
+  if (request.boardColumn === "Completed")
+    throw new Error("Reopen the event before linking a property.");
   if (request.propertyId && request.propertyId !== propertyId)
     throw new Error("This request already belongs to another property");
   const people = propertyPeople(property);

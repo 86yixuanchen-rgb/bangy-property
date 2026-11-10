@@ -1,3 +1,4 @@
+import type { AssistantContext } from "@/lib/assistant-property";
 import { NotificationBell } from "./case-workflow/NotificationBell";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -51,10 +52,14 @@ export function AppShell({
   children,
   onOpenAI,
   openAssistantSignal = 0,
+  assistantContext,
+  assistantContextLabel,
 }: {
   children: ReactNode;
   onOpenAI?: () => void;
   openAssistantSignal?: number;
+  assistantContext?: AssistantContext | undefined;
+  assistantContextLabel?: string | undefined;
 }) {
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
@@ -299,9 +304,13 @@ export function AppShell({
               type="button"
               aria-label="Close AI panel backdrop"
               className="fixed inset-x-0 bottom-0 top-14 z-30 bg-black/20 2xl:hidden"
-              onClick={() => setAssistantOpen(false)}
+              onClick={() => window.dispatchEvent(new Event("assistant-close-request"))}
             />
-            <AssistantPanel onClose={() => setAssistantOpen(false)} />
+            <AssistantPanel
+              onClose={() => setAssistantOpen(false)}
+              context={assistantContext}
+              contextLabel={assistantContextLabel}
+            />
           </>
         ) : null}
       </div>

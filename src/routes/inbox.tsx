@@ -243,7 +243,12 @@ function InboxPage() {
   };
 
   return (
-    <AppShell>
+    <AppShell
+      assistantContext={selected && !composing ? { emailId: selected.id } : {}}
+      assistantContextLabel={
+        selected && !composing ? `Selected email: ${selected.subject}` : "No email selected"
+      }
+    >
       <div className="inbox-layout min-h-[calc(100vh-3.5rem)]">
         <div
           className={`inbox-list ${selected || composing ? "inbox-list-hidden" : ""} flex-col border-r bg-card`}

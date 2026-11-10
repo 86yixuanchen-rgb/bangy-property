@@ -242,6 +242,16 @@ export function RescheduleButton({
     }),
     [location, setLocation] = useState(appointment.location),
     [reason, setReason] = useState("");
+  const [duration, setDuration] = useState(
+    String(
+      Math.round(
+        ((appointment.endsAt ?? appointment.startsAt + 3600000) - appointment.startsAt) / 60000,
+      ),
+    ),
+  );
+  const [attendees, setAttendees] = useState(
+    (JSON.parse(appointment.attendeeEmails ?? "[]") as string[]).join(", "),
+  );
   const refresh = useWorkflowRefresh(requestId);
   return (
     <>
@@ -263,6 +273,11 @@ export function RescheduleButton({
                     id: appointment.id,
                     previousStart: appointment.startsAt,
                     startsAt: new Date(when).getTime(),
+                    endsAt: new Date(when).getTime() + Number(duration) * 60000,
+                    attendeeEmails: attendees
+                      .split(",")
+                      .map((s) => s.trim())
+                      .filter(Boolean),
                     location,
                     reason,
                   },
@@ -301,6 +316,28 @@ export function RescheduleButton({
                 className={field}
                 value={when}
                 onChange={(e) => setWhen(e.target.value)}
+              />
+            </label>
+            <label className="block">
+              Duration (minutes)
+              <input
+                type="number"
+                min="15"
+                max="1440"
+                step="15"
+                required
+                className={field}
+                value={duration}
+                onChange={(e) => setDuration(e.target.value)}
+              />
+            </label>
+            <label className="block">
+              Attendee emails
+              <input
+                className={field}
+                value={attendees}
+                onChange={(e) => setAttendees(e.target.value)}
+                placeholder="Separate with commas"
               />
             </label>
             <label className="block">

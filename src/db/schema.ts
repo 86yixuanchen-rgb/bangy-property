@@ -123,17 +123,25 @@ export const requestQuotes = sqliteTable(
   (t) => [uniqueIndex("quote_successor_idx").on(t.userId, t.supersedesId)],
 );
 
-export const appointments = sqliteTable("appointments", {
-  cancelledAt: integer("cancelled_at"),
-  cancelReason: text("cancel_reason"),
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  userId: text("user_id").notNull(),
-  requestId: text("request_id"),
-  propertyId: integer("property_id").references(() => properties.id, { onDelete: "restrict" }),
-  title: text("title").notNull(),
-  startsAt: integer("starts_at").notNull(),
-  location: text("location").notNull().default(""),
-});
+export const appointments = sqliteTable(
+  "appointments",
+  {
+    endsAt: integer("ends_at"),
+    attendeeEmails: text("attendee_emails").notNull().default("[]"),
+    notes: text("notes").notNull().default(""),
+    operationId: text("operation_id"),
+    cancelledAt: integer("cancelled_at"),
+    cancelReason: text("cancel_reason"),
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: text("user_id").notNull(),
+    requestId: text("request_id"),
+    propertyId: integer("property_id").references(() => properties.id, { onDelete: "restrict" }),
+    title: text("title").notNull(),
+    startsAt: integer("starts_at").notNull(),
+    location: text("location").notNull().default(""),
+  },
+  (t) => [uniqueIndex("appointment_operation_idx").on(t.userId, t.operationId)],
+);
 
 // IDs are reserved atomically on the server, independently of browser caches.
 export const requestCounters = sqliteTable("request_counters", {
@@ -255,4 +263,73 @@ export const notificationReads = sqliteTable(
     at: integer("at").notNull(),
   },
   (t) => [primaryKey({ columns: [t.userId, t.key] })],
+);
+
+export const workspaceContacts = sqliteTable(
+  "workspace_contacts",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    name: text("name").notNull(),
+    email: text("email").notNull(),
+    role: text("role").notNull(),
+    phone: text("phone").notNull().default(""),
+    notes: text("notes").notNull().default(""),
+    archivedAt: integer("archived_at"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [uniqueIndex("workspace_contacts_email_idx").on(t.userId, t.email)],
+);
+export const assistantSessions = sqliteTable(
+  "assistant_sessions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    title: text("title").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [index("assistant_sessions_user_idx").on(t.userId, t.updatedAt)],
+);
+export const assistantMessages = sqliteTable(
+  "assistant_messages",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    role: text("role").notNull(),
+    content: text("content").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [index("assistant_messages_session_idx").on(t.userId, t.sessionId, t.createdAt)],
+);
+export const assistantPlans = sqliteTable("assistant_plans", {
+  lockedAt: integer("locked_at"),
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  sessionId: text("session_id").notNull(),
+  title: text("title").notNull(),
+  context: text("context").notNull().default("{}"),
+  revision: integer("revision").notNull().default(1),
+  state: text("state").notNull().default("review"),
+  createdAt: integer("created_at").notNull(),
+});
+export const assistantSteps = sqliteTable(
+  "assistant_steps",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    planId: text("plan_id").notNull(),
+    position: integer("position").notNull(),
+    action: text("action").notNull(),
+    args: text("args").notNull(),
+    dependsOn: text("depends_on").notNull().default("[]"),
+    state: text("state").notNull().default("pending"),
+    snapshot: text("snapshot").notNull().default(""),
+    result: text("result"),
+    error: text("error"),
+    startedAt: integer("started_at"),
+    completedAt: integer("completed_at"),
+  },
+  (t) => [index("assistant_steps_plan_idx").on(t.userId, t.planId, t.position)],
 );
