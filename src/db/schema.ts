@@ -283,6 +283,10 @@ export const workspaceContacts = sqliteTable(
 export const assistantSessions = sqliteTable(
   "assistant_sessions",
   {
+    archivedAt: integer("archived_at"),
+    activity: text("activity").notNull().default(""),
+    runId: text("run_id"),
+    stopRequested: integer("stop_requested", { mode: "boolean" }).notNull().default(false),
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
     title: text("title").notNull(),
@@ -304,6 +308,7 @@ export const assistantMessages = sqliteTable(
   (t) => [index("assistant_messages_session_idx").on(t.userId, t.sessionId, t.createdAt)],
 );
 export const assistantPlans = sqliteTable("assistant_plans", {
+  stopRequested: integer("stop_requested", { mode: "boolean" }).notNull().default(false),
   lockedAt: integer("locked_at"),
   id: text("id").primaryKey(),
   userId: text("user_id").notNull(),
@@ -333,3 +338,23 @@ export const assistantSteps = sqliteTable(
   },
   (t) => [index("assistant_steps_plan_idx").on(t.userId, t.planId, t.position)],
 );
+
+export const emailTriage = sqliteTable(
+  "email_triage",
+  {
+    userId: text("user_id").notNull(),
+    emailId: text("email_id").notNull(),
+    state: text("state").notNull(),
+    at: integer("at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.emailId] })],
+);
+export const assistantReceipts = sqliteTable("assistant_receipts", {
+  stepId: text("step_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  entity: text("entity").notNull(),
+  recordId: text("record_id").notNull(),
+  beforeJson: text("before_json"),
+  afterJson: text("after_json").notNull(),
+  undoneAt: integer("undone_at"),
+});

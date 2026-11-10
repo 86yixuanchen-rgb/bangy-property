@@ -1,7 +1,7 @@
+import { EmailProcessingCard } from "@/components/EmailProcessingCard";
 import { AttachmentPicker } from "@/components/case-workflow/Management";
-import { PropertySelect } from "@/components/PropertySelect";
 import { sendEmail } from "@/lib/send-email";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -21,6 +21,8 @@ import { disconnectGmail, getInbox, moveEmail, syncGmail } from "@/lib/gmail.fun
 import { linkEmail } from "@/lib/incidents.functions";
 
 export const Route = createFileRoute("/inbox")({
+  validateSearch: (search: Record<string, unknown>): { email?: string } =>
+    typeof search["email"] === "string" ? { email: search["email"] } : {},
   head: () => ({
     meta: [
       { title: "Unified Inbox — Banjg Property" },
@@ -43,7 +45,11 @@ function formatTime(ms: number) {
 function InboxPage() {
   const [query, setQuery] = useState("");
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
-  const [selectedId, setSelectedId] = useState("");
+  const searchParams = Route.useSearch();
+  const [selectedId, setSelectedId] = useState(searchParams.email ?? "");
+  useEffect(() => {
+    if (searchParams.email) setSelectedId(searchParams.email);
+  }, [searchParams.email]);
   const [replying, setReplying] = useState(false);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
@@ -55,14 +61,11 @@ function InboxPage() {
   const [body, setBody] = useState("");
   const [requestId, setRequestId] = useState("");
   const [moving, setMoving] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [newPropertyId, setNewPropertyId] = useState("");
   const [reconnect, setReconnect] = useState(false);
   const [composeFiles, setComposeFiles] = useState<string[]>([]);
   const [replyFiles, setReplyFiles] = useState<string[]>([]);
-  const { requests, addRequest, notify } = useWorkspace();
+  const { requests, notify } = useWorkspace();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const inbox = useQuery({ queryKey: ["inbox"], queryFn: () => getInbox(), staleTime: Infinity });
   const connected = inbox.data?.connected === true;
   const emails = useMemo(() => (inbox.data?.connected ? inbox.data.emails : []), [inbox.data]);
@@ -507,6 +510,9 @@ function InboxPage() {
                   </div>
                 </div>
                 <p className="whitespace-pre-wrap break-words py-6 text-[15px]">{selected.body}</p>
+                {!selected.trashed && !selected.sent && (
+                  <EmailProcessingCard key={selected.id} emailId={selected.id} />
+                )}
                 {selected.trashed || selected.sent ? null : replying ? (
                   <form onSubmit={(e) => void submitReply(e)}>
                     <textarea
@@ -588,62 +594,10 @@ function InboxPage() {
                   </button>
                 </div>
               ) : (
-                <div className="mt-3 space-y-4 text-sm">
-                  <p className="text-muted-foreground">
-                    This email is not linked to a request. Choose the right request below when the
-                    conversation or contact matches more than one repair.
-                  </p>
-                  <PropertySelect value={newPropertyId} onChange={setNewPropertyId} />
-                  <button
-                    disabled={creating || !newPropertyId}
-                    onClick={async () => {
-                      if (creating) return;
-                      setCreating(true);
-                      try {
-                        const created = await addRequest({
-                          title: selected.subject.slice(0, 200),
-                          propertyId: Number(newPropertyId),
-                          priority: "Medium",
-                        });
-                        await linkEmail({ data: { emailId: selected.id, requestId: created.id } });
-                        notify(`${created.id} created from email`);
-                        void navigate({ to: "/requests/$id", params: { id: created.id } });
-                      } catch {
-                        notify("Could not create or link the request. Please try again.");
-                      } finally {
-                        setCreating(false);
-                      }
-                    }}
-                    className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-primary-foreground"
-                  >
-                    Create repair request from this email
-                  </button>
-                  {requests.some((r) => r.column !== "Completed") ? (
-                    <label className="block text-xs text-muted-foreground">
-                      Or link to an existing request
-                      <select
-                        defaultValue=""
-                        onChange={(e) => {
-                          const id = e.target.value;
-                          if (!id) return;
-                          void linkEmail({ data: { emailId: selected.id, requestId: id } })
-                            .then(refreshLinks)
-                            .then(() => notify(`Email linked to ${id}`));
-                        }}
-                        className="mt-1 block h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground"
-                      >
-                        <option value="">Choose a request…</option>
-                        {requests
-                          .filter((r) => r.column !== "Completed")
-                          .map((r) => (
-                            <option key={r.id} value={r.id}>
-                              {r.id} — {r.title}
-                            </option>
-                          ))}
-                      </select>
-                    </label>
-                  ) : null}
-                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Use the incoming-email card to choose a property and review a new case or link an
+                  existing case.
+                </p>
               )}
               <p className="mt-6 text-xs text-muted-foreground">
                 Replies are sent from your Gmail account and appear in the request timeline.

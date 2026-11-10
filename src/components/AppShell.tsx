@@ -1,3 +1,4 @@
+import type { AssistantOpenDetail } from "@/lib/assistant-open";
 import type { AssistantContext } from "@/lib/assistant-property";
 import { NotificationBell } from "./case-workflow/NotificationBell";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -45,6 +46,12 @@ const nav = [
     section: "calendar",
   },
   { label: "Analytics", icon: BarChart3, to: "/workspace/$section" as const, section: "analytics" },
+  {
+    label: "Review center",
+    icon: ClipboardList,
+    to: "/workspace/$section" as const,
+    section: "review",
+  },
   { label: "Settings", icon: Settings, to: "/workspace/$section" as const, section: "settings" },
 ];
 
@@ -61,6 +68,15 @@ export function AppShell({
   assistantContext?: AssistantContext | undefined;
   assistantContextLabel?: string | undefined;
 }) {
+  const [assistantTarget, setAssistantTarget] = useState<AssistantOpenDetail | null>(null);
+  useEffect(() => {
+    const open = (event: Event) => {
+      setAssistantTarget((event as CustomEvent<AssistantOpenDetail>).detail);
+      setAssistantOpen(true);
+    };
+    window.addEventListener("assistant-open", open);
+    return () => window.removeEventListener("assistant-open", open);
+  }, []);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [search, setSearch] = useState("");
@@ -308,8 +324,10 @@ export function AppShell({
             />
             <AssistantPanel
               onClose={() => setAssistantOpen(false)}
-              context={assistantContext}
-              contextLabel={assistantContextLabel}
+              initialSessionId={assistantTarget?.sessionId}
+              initialStepId={assistantTarget?.stepId}
+              context={assistantTarget?.context ?? assistantContext}
+              contextLabel={assistantTarget?.label ?? assistantContextLabel}
             />
           </>
         ) : null}

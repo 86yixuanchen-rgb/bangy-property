@@ -118,6 +118,7 @@ export const assistantActions: Record<string, ActionDefinition> = {
           "properties",
           "contacts",
           "calendar",
+          "review",
           "analytics",
           "settings",
           "event",

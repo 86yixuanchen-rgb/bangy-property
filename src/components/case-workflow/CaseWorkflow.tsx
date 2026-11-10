@@ -1,3 +1,4 @@
+import { AppointmentAlternatives } from "../AssistantExtras";
 import { CancelVisit, FileManagement } from "./Management";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -340,6 +341,24 @@ export function RescheduleButton({
                 placeholder="Separate with commas"
               />
             </label>
+            <AppointmentAlternatives
+              action="appointment.update"
+              args={{
+                id: appointment.id,
+                startsAt: new Date(when).getTime(),
+                endsAt: new Date(when).getTime() + Number(duration) * 60000,
+                attendeeEmails: attendees
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              }}
+              onSelect={(args) => {
+                const d = new Date(Number(args["startsAt"]));
+                setWhen(
+                  new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16),
+                );
+              }}
+            />
             <label className="block">
               Location
               <input

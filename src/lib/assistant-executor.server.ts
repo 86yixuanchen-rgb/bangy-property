@@ -11,7 +11,8 @@ import * as contacts from "./contacts.functions";
 import * as mail from "./gmail.functions";
 import * as actions from "./incident-actions.functions";
 import { actionContext, listActionPlan } from "./incident-actions.server";
-import { confirmAssistantProperty } from "./assistant-property.functions";
+import { propertyFields } from "./assistant-property";
+import { createAssistantProperty } from "./assistant-property.server";
 
 const entities = {
   properties: tables.properties,
@@ -151,7 +152,7 @@ export async function actionSnapshot(
 export function recordHref(entity: string, row: Record<string, unknown>) {
   if (entity === "events") return `/requests/${row["id"]}`;
   if (entity === "properties") return `/workspace/properties?property=${row["id"]}`;
-  if (entity === "emails") return "/inbox";
+  if (entity === "emails") return `/inbox?email=${encodeURIComponent(String(row["id"]))}`;
   if (row["requestId"]) return `/requests/${row["requestId"]}`;
   return `/workspace/${entity === "appointments" ? "calendar" : entity === "contacts" ? "contacts" : "properties"}`;
 }
@@ -298,11 +299,7 @@ export async function executeBusinessAction(
       href = href ?? `/workspace/properties?property=${a["propertyId"]}`;
       break;
     case "property.create": {
-      const r = await call(confirmAssistantProperty, {
-        fields: a,
-        sourceEmailId: null,
-        requestId: null,
-      });
+      const r = await createAssistantProperty(db, userId, propertyFields.parse(a));
       return {
         summary: r.created ? "Property created" : "Existing property reused",
         id: r.property.id,
@@ -355,9 +352,22 @@ export async function executeBusinessAction(
     case "event.remove_person":
       result = await call(incidents.removeParticipant, a);
       break;
-    case "event.note":
-      result = await call(incidents.addNote, a);
+    case "event.note": {
+      const note = await call(incidents.addNote, a);
+      await db
+        .insert(tables.assistantReceipts)
+        .values({
+          stepId,
+          userId,
+          entity: "notes",
+          recordId: String(note.id),
+          beforeJson: JSON.stringify({ text: "[Note withdrawn by Property Manager]" }),
+          afterJson: JSON.stringify({ text: String(a["text"]) }),
+        })
+        .onConflictDoNothing();
+      result = note;
       break;
+    }
     case "event.link_email":
       result = await call(incidents.linkEmail, a);
       break;
@@ -555,5 +565,93 @@ export async function reviewBusinessImpact(
       ],
     };
   }
+  const entity = (
+    {
+      "contact.save": "contacts",
+      "property.update": "properties",
+      "appointment.update": "appointments",
+      "event.update": "events",
+      "action.edit": "actions",
+    } as Record<string, string>
+  )[action];
+  if (entity && args["id"]) {
+    const before = await ownedEntity(db, userId, entity, args["id"]);
+    const aliases: Record<string, string> = { column: "boardColumn", to: "recipientEmail" };
+    const rows = assistantActions[action]!.fields.filter(
+      (f) => f.key !== "id" && f.key !== "reason" && args[f.key] !== undefined,
+    )
+      .map((f) => {
+        const old = before[aliases[f.key] ?? f.key];
+        const next = args[f.key];
+        const show = (v: unknown) =>
+          f.type === "time" && typeof v === "number"
+            ? new Date(v).toLocaleString("en-AU", { timeZone: "Australia/Sydney" })
+            : typeof v === "object"
+              ? JSON.stringify(v)
+              : String(v ?? "—");
+        return { field: f.label, before: show(old), after: show(next) };
+      })
+      .filter((r) => r.before !== r.after);
+    if (entity === "properties") {
+      const events = await db
+        .select()
+        .from(tables.repairRequests)
+        .where(
+          and(
+            eq(tables.repairRequests.userId, userId),
+            eq(tables.repairRequests.propertyId, Number(args["id"])),
+          ),
+        );
+      rows.push({
+        field: "Related events",
+        before: String(events.length),
+        after: "Historical contacts stay unchanged; review contact updates separately.",
+      });
+    }
+    if (entity === "appointments")
+      rows.push({
+        field: "Notifications",
+        before: "Existing drafts",
+        after: before["requestId"]
+          ? "Replacement tenant / repair-team drafts; separate sending confirmation."
+          : "Property-only booking: no invitations sent.",
+      });
+    if (entity === "contacts")
+      rows.push({
+        field: "Existing associations",
+        before: "Property / event snapshots",
+        after: "Retained; associate this updated contact separately.",
+      });
+    return { summary: "Before → after: review these changes", rows };
+  }
   return null;
+}
+
+export async function validateActionReadiness(
+  db: AppDatabase,
+  userId: string,
+  action: string,
+  args: Record<string, unknown>,
+) {
+  if (
+    action === "email.draft" &&
+    args["requestId"] &&
+    !String(args["requestId"]).startsWith("$") &&
+    args["to"] &&
+    !String(args["to"]).startsWith("$")
+  ) {
+    const people = await db
+      .select()
+      .from(tables.requestParticipants)
+      .where(
+        and(
+          eq(tables.requestParticipants.userId, userId),
+          eq(tables.requestParticipants.requestId, String(args["requestId"])),
+        ),
+      );
+    if (!people.some((p) => p.email.toLowerCase() === String(args["to"]).toLowerCase()))
+      throw new Error(
+        "Recipient is missing from this case. Add the event participant, then refresh and review this draft.",
+      );
+  }
 }

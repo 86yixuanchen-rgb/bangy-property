@@ -9,11 +9,19 @@ import * as schema from "@/db/schema";
 import { createRequestRecord, linkRequestToProperty } from "@/lib/request-create.server";
 const session = vi.hoisted(() => ({ userId: "property-user" }));
 let db: ReturnType<typeof drizzle<typeof schema>>;
-const aiFixture = vi.hoisted(() => ({ content: "{}", requestBody: "" }));
-vi.mock("@/lib/ai-gateway.server", () => ({
+const aiFixture = vi.hoisted(() => ({
+  content: "{}",
+  requestBody: "",
+  beforeResponse: null as null | (() => Promise<void>),
+}));
+vi.mock("@/lib/ai-gateway.server", async () => ({
+  deepSeekModelOptions: (
+    await vi.importActual<typeof import("@/lib/ai-gateway.server")>("@/lib/ai-gateway.server")
+  ).deepSeekModelOptions,
   aiConfigured: () => true,
   fetchDeepSeek: async (input: { body: string }) => {
     aiFixture.requestBody = input.body;
+    await aiFixture.beforeResponse?.();
     return new Response(
       JSON.stringify({ choices: [{ message: { content: aiFixture.content } }] }),
       { status: 200 },
@@ -75,6 +83,7 @@ beforeAll(async () => {
 let counter = 0;
 beforeEach(() => {
   session.userId = `property-user-${++counter}`;
+  aiFixture.beforeResponse = null;
 });
 const input = () => ({
   address: "24 King St",
@@ -2291,4 +2300,356 @@ it("runs read-only AI plans immediately without confirming or executing other pe
   expect(JSON.parse(opened.steps[0]!.result!).href).toBe("/workspace/calendar");
   expect((await p.current()).steps[0]!.state).toBe("pending");
   expect(await directory.listDirectoryContacts()).toHaveLength(0);
+});
+
+import * as followthrough from "@/lib/assistant-followthrough.functions";
+describe("Assistant follow-through interactions", () => {
+  it("renames and archives conversations without discarding pending reviews", async () => {
+    const p = await newPlan([{ action: "contact.save", args: { name: "Review me" } }]);
+    await followthrough.manageConversation({
+      data: { id: p.sessionId, title: "Tenant onboarding", archive: true },
+    });
+    const list = await assistant.listAssistantSessions();
+    expect(list.find((s) => s.id === p.sessionId)?.archivedAt).toBeTruthy();
+    expect((await followthrough.getReviewQueue()).some((r) => r.sessionId === p.sessionId)).toBe(
+      true,
+    );
+    await expect(
+      assistant.askWorkspaceAssistant({
+        data: { sessionId: p.sessionId, question: "Hello", context: {} },
+      }),
+    ).rejects.toThrow("Restore");
+    await followthrough.manageConversation({ data: { id: p.sessionId, archive: false } });
+    expect((await assistant.listAssistantSessions()).find((s) => s.id === p.sessionId)?.title).toBe(
+      "Tenant onboarding",
+    );
+  });
+  it("does not allow another user to manage a conversation", async () => {
+    const p = await newPlan([{ action: "contact.save", args: { name: "Private" } }]);
+    session.userId = "other-user";
+    await expect(
+      followthrough.manageConversation({ data: { id: p.sessionId, title: "Stolen" } }),
+    ).rejects.toThrow();
+    expect(await followthrough.getReviewQueue()).toEqual([]);
+  });
+  it("shows address and sender matches as candidates, and allows reopening non-repair classification", async () => {
+    const p = await property();
+    const id = crypto.randomUUID();
+    await db.insert(schema.emailMessages).values({
+      userId: session.userId,
+      id,
+      threadId: id,
+      fromName: "Tenant",
+      fromEmail: "tenant@example.test",
+      subject: `Leak at ${p.address}`,
+      snippet: "Please help",
+      body: "Please fix the tap",
+      receivedAt: Date.now(),
+      unread: true,
+    });
+    const inspect = await followthrough.inspectIncomingEmail({ data: { emailId: id } });
+    expect(inspect.candidates.map((x) => x.id)).toContain(p.id);
+    expect(inspect.email.requestId).toBeNull();
+    expect((await followthrough.getReviewQueue()).some((r) => r.id === "mail:" + id)).toBe(true);
+    await followthrough.classifyEmail({ data: { emailId: id, state: "not_repair" } });
+    expect((await followthrough.getReviewQueue()).some((r) => r.id === "mail:" + id)).toBe(false);
+    await followthrough.classifyEmail({ data: { emailId: id, state: "unreviewed" } });
+    expect((await followthrough.getReviewQueue()).some((r) => r.id === "mail:" + id)).toBe(true);
+  });
+  it("rejects cross-account email-to-case links", async () => {
+    const id = crypto.randomUUID();
+    await db.insert(schema.emailMessages).values({
+      userId: session.userId,
+      id,
+      threadId: id,
+      fromName: "Tenant",
+      fromEmail: "tenant@example.test",
+      subject: "Leak",
+      snippet: "Leak",
+      body: "Leak",
+      receivedAt: Date.now(),
+      unread: true,
+    });
+    const { linkEmail } = await import("@/lib/incidents.functions");
+    await expect(linkEmail({ data: { emailId: id, requestId: "REQ-999999" } })).rejects.toThrow(
+      "Request not found",
+    );
+  });
+  it("offers free slots excluding same-property and shared-attendee overlaps", async () => {
+    const home = await property();
+    const start = Date.parse("2030-02-11T10:00:00+11:00");
+    await addAppointment({
+      data: {
+        propertyId: home.id,
+        title: "Busy",
+        startsAt: start,
+        endsAt: start + 3600000,
+        attendeeEmails: ["tenant@example.test"],
+        requestId: null,
+        location: home.address,
+      },
+    });
+    const slots = await followthrough.availableAppointmentSlots({
+      data: { propertyId: home.id, startsAt: start, endsAt: start + 3600000, attendeeEmails: [] },
+    });
+    expect(slots).toHaveLength(5);
+    expect(slots[0]!.startsAt).toBe(start + 3600000);
+    expect(slots.every((s) => s.endsAt - s.startsAt === 3600000)).toBe(true);
+  });
+  it("previews contact changes and supports undo without overwriting later edits", async () => {
+    const contact = await directory.saveDirectoryContact({
+      data: { name: "Before", email: "undo@example.test", role: "Tenant", phone: "", notes: "" },
+    });
+    const p = await newPlan(
+      [
+        {
+          action: "contact.save",
+          args: { ...contact.contact, name: "After", id: contact.contact.id },
+        },
+      ].map((s) => ({
+        ...s,
+        args: {
+          id: s.args.id,
+          name: "After",
+          email: "undo@example.test",
+          role: "Tenant",
+          phone: "",
+          notes: "",
+        },
+      })),
+    );
+    expect((await p.current()).steps[0]!.result).toContain("Before");
+    await confirm(p);
+    const step = (await p.current()).steps[0]!;
+    await followthrough.undoAssistantChange({ data: { stepId: step.id } });
+    expect((await directory.listDirectoryContacts())[0]!.name).toBe("Before");
+    await expect(followthrough.undoAssistantChange({ data: { stepId: step.id } })).rejects.toThrow(
+      "cannot be undone",
+    );
+    const p2 = await newPlan([
+      {
+        action: "contact.save",
+        args: {
+          id: contact.contact.id,
+          name: "After again",
+          email: "undo@example.test",
+          role: "Tenant",
+          phone: "",
+          notes: "",
+        },
+      },
+    ]);
+    await confirm(p2);
+    await directory.saveDirectoryContact({
+      data: {
+        id: contact.contact.id,
+        name: "Someone else edited",
+        email: "undo@example.test",
+        role: "Tenant",
+        phone: "",
+        notes: "",
+      },
+    });
+    await expect(
+      followthrough.undoAssistantChange({ data: { stepId: (await p2.current()).steps[0]!.id } }),
+    ).rejects.toThrow("changed after");
+    expect((await directory.listDirectoryContacts())[0]!.name).toBe("Someone else edited");
+  });
+  it("withdraws an internal note while retaining its history", async () => {
+    const home = await property();
+    const r = await createRequestRecord(db, session.userId, {
+      title: "Note test",
+      propertyId: home.id,
+      priority: "High",
+    });
+    const p = await newPlan([
+      { action: "event.note", args: { requestId: r.id, text: "Temporary internal note" } },
+    ]);
+    await confirm(p);
+    await followthrough.undoAssistantChange({ data: { stepId: (await p.current()).steps[0]!.id } });
+    const rows = await db
+      .select()
+      .from(schema.requestEvents)
+      .where(
+        and(eq(schema.requestEvents.userId, session.userId), eq(schema.requestEvents.kind, "note")),
+      );
+    expect(rows.some((r) => r.text === "[Note withdrawn by Property Manager]")).toBe(true);
+  });
+  it("verifies interrupted appointment result using its stable operation identity", async () => {
+    const home = await property();
+    const start = Date.parse("2030-02-11T10:00:00+11:00");
+    const p = await newPlan([
+      {
+        action: "appointment.create",
+        args: {
+          propertyId: home.id,
+          title: "Visit",
+          startsAt: start,
+          endsAt: start + 3600000,
+          attendeeEmails: [],
+        },
+      },
+    ]);
+    await confirm(p);
+    const step = (await p.current()).steps[0]!;
+    const id = JSON.parse(step.result!).id;
+    await db
+      .update(schema.assistantSteps)
+      .set({ state: "uncertain", result: null })
+      .where(eq(schema.assistantSteps.id, step.id));
+    await followthrough.reconcileAssistantStep({
+      data: { stepId: step.id, recordId: String(id), dismiss: false },
+    });
+    expect((await p.current()).steps[0]!.state).toBe("succeeded");
+    expect(
+      await db
+        .select()
+        .from(schema.appointments)
+        .where(eq(schema.appointments.userId, session.userId)),
+    ).toHaveLength(1);
+  });
+  it("does not accept a mismatched record when resolving uncertain work", async () => {
+    const p = await newPlan([
+      {
+        action: "contact.save",
+        args: { name: "Expected", email: "expected@example.test", role: "Tenant" },
+      },
+    ]);
+    const s = (await p.current()).steps[0]!;
+    await db
+      .update(schema.assistantSteps)
+      .set({ state: "uncertain" })
+      .where(eq(schema.assistantSteps.id, s.id));
+    const other = await directory.saveDirectoryContact({
+      data: { name: "Other", email: "other@example.test", role: "Tenant", phone: "", notes: "" },
+    });
+    await expect(
+      followthrough.reconcileAssistantStep({
+        data: { stepId: s.id, recordId: other.contact.id, dismiss: false },
+      }),
+    ).rejects.toThrow("does not match");
+    expect((await p.current()).steps[0]!.state).toBe("uncertain");
+  });
+  it("keeps a stop request on an active execution without resetting completed steps", async () => {
+    const p = await newPlan([{ action: "contact.save", args: { name: "Not yet" } }]);
+    await db
+      .update(schema.assistantPlans)
+      .set({ state: "running", lockedAt: Date.now() })
+      .where(eq(schema.assistantPlans.id, p.id));
+    await followthrough.stopAssistant({ data: { sessionId: p.sessionId } });
+    expect((await p.current()).stopRequested).toBe(true);
+    expect((await p.current()).steps[0]!.state).toBe("pending");
+  });
+  it("includes property and case context in conversation search metadata", async () => {
+    const home = await property(),
+      s = await assistant.createAssistantSession();
+    await assistant.createAssistantPlan({
+      data: {
+        sessionId: s.id,
+        title: "Property follow-up",
+        context: { propertyId: home.id },
+        steps: [{ action: "property.update", args: { ...input(), id: home.id }, dependsOn: [] }],
+      },
+    });
+    const entry = (await assistant.listAssistantSessions()).find((r) => r.id === s.id)!;
+    expect(entry.contextText).toContain(home.address);
+  });
+});
+
+it("lets a dependent draft continue after adding the missing recipient", async () => {
+  const home = await property();
+  const r = await createRequestRecord(db, session.userId, {
+    title: "Missing person",
+    propertyId: home.id,
+    priority: "High",
+  });
+  const p = await newPlan([
+    {
+      action: "event.person",
+      args: {
+        requestId: r.id,
+        name: "New trade",
+        email: "newtrade@example.test",
+        role: "Repair Team",
+      },
+    },
+    {
+      action: "email.draft",
+      args: {
+        requestId: r.id,
+        to: "newtrade@example.test",
+        subject: "Review visit",
+        body: "Please discuss a time.",
+      },
+      dependsOn: [1],
+    },
+  ]);
+  expect((await p.current()).steps[1]!.error).toContain("Recipient is missing");
+  await confirm(p);
+  expect((await p.current()).steps.map((s) => s.state)).toEqual(["succeeded", "succeeded"]);
+});
+it("blocks a missing-recipient draft before mutation, keeping it editable", async () => {
+  const home = await property();
+  const r = await createRequestRecord(db, session.userId, {
+    title: "Missing person",
+    propertyId: home.id,
+    priority: "High",
+  });
+  const p = await newPlan([
+    {
+      action: "email.draft",
+      args: { requestId: r.id, to: "missing@example.test", subject: "Draft", body: "Review me" },
+    },
+  ]);
+  await confirm(p);
+  expect((await p.current()).steps[0]!.state).toBe("failed");
+  expect((await p.current()).steps[0]!.error).toContain("Recipient is missing");
+});
+
+it("stops model preparation before saving a late proposal", async () => {
+  const s = await assistant.createAssistantSession();
+  aiFixture.content = JSON.stringify({
+    type: "plan",
+    title: "Do not save",
+    steps: [
+      {
+        action: "contact.save",
+        args: { name: "Late", email: "late@example.test", role: "Tenant" },
+      },
+    ],
+  });
+  aiFixture.beforeResponse = async () => {
+    await followthrough.stopAssistant({ data: { sessionId: s.id } });
+  };
+  await assistant.askWorkspaceAssistant({
+    data: { sessionId: s.id, question: "Create a contact", context: {} },
+  });
+  const c = await assistant.getAssistantConversation({ data: { sessionId: s.id } });
+  expect(c.plans).toHaveLength(0);
+  expect(c.messages.some((m) => m.content.includes("Stopped preparation"))).toBe(true);
+  expect(c.session?.runId).toBeNull();
+});
+it("prepares a blank correction for a sent email without resending or recalling it", async () => {
+  await db
+    .insert(schema.gmailAccounts)
+    .values({ userId: session.userId, email: "pm@example.test", refreshToken: "demo-account" });
+  const p = await newPlan([
+    {
+      action: "email.send",
+      args: { to: "tenant@example.test", subject: "Original", body: "Original text" },
+    },
+  ]);
+  const step = (await p.current()).steps[0]!;
+  await confirm(p, step.id, "send");
+  await assistant.prepareEmailCorrection({ data: { stepId: step.id } });
+  const chat = await assistant.getAssistantConversation({ data: { sessionId: p.sessionId } });
+  const correction = chat.plans.find((p) => p.title.startsWith("Write a correction"))!;
+  expect(correction.steps[0]!.state).toBe("pending");
+  expect(JSON.parse(correction.steps[0]!.args).body).toBe("");
+  expect(
+    await db
+      .select()
+      .from(schema.mailSendOperations)
+      .where(eq(schema.mailSendOperations.userId, session.userId)),
+  ).toHaveLength(1);
 });

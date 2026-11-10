@@ -341,6 +341,47 @@ export function PropertiesSection({
           const changes = contactChanges.filter((c) => c.propertyId === p.id);
           return (
             <article key={p.id} className="rounded-lg border bg-card p-5 shadow-card">
+              {!p.archivedAt && (
+                <div className="mb-4 rounded-lg border bg-muted/30 p-3 text-xs">
+                  <strong>
+                    Contact readiness ·{" "}
+                    {
+                      [
+                        p.managerName && p.managerEmail,
+                        p.ownerName && p.ownerEmail,
+                        p.tenantName && p.tenantEmail,
+                      ].filter(Boolean).length
+                    }
+                    /3 roles complete
+                  </strong>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {[
+                      { name: "PM", ready: p.managerName && p.managerEmail },
+                      { name: "Landlord", ready: p.ownerName && p.ownerEmail },
+                      { name: "Tenant", ready: p.tenantName && p.tenantEmail },
+                    ]
+                      .filter((r) => !r.ready)
+                      .map((r) => (
+                        <button
+                          key={r.name}
+                          className="rounded border px-2 py-1 text-primary"
+                          onClick={() => {
+                            setEditing(p.id);
+                            setForm(p);
+                            setError("");
+                            setOpen(true);
+                          }}
+                        >
+                          Complete {r.name} details →
+                        </button>
+                      ))}
+                  </div>
+                  <p className="mt-1 text-muted-foreground">
+                    Email actions need a named recipient and valid email. Existing case contacts are
+                    reviewed separately.
+                  </p>
+                </div>
+              )}
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
                   <h2 className="flex items-center gap-2 font-semibold">
@@ -437,41 +478,6 @@ export function PropertiesSection({
                   </button>
                 </div>
               </div>
-              {!p.managerEmail || !p.ownerEmail || !p.tenantEmail ? (
-                <div className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm">
-                  <strong>Missing contact details</strong>
-                  <p>
-                    {[
-                      !p.managerEmail && "PM email",
-                      !p.ownerEmail && "landlord email",
-                      !p.tenantEmail && "tenant email",
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </p>
-                  <button
-                    className="mt-1 text-primary underline"
-                    onClick={() => {
-                      setForm({
-                        address: p.address,
-                        managerName: p.managerName,
-                        managerEmail: p.managerEmail,
-                        ownerName: p.ownerName,
-                        ownerEmail: p.ownerEmail,
-                        tenantName: p.tenantName,
-                        tenantEmail: p.tenantEmail,
-                        notes: p.notes,
-                      });
-                      setEditing(p.id);
-                      setError("");
-                      setOpen(true);
-                      window.scrollTo({ top: 0, behavior: "smooth" });
-                    }}
-                  >
-                    Add missing details
-                  </button>
-                </div>
-              ) : null}
               {selectedId === null ? (
                 <div className="mt-4 flex items-center justify-between text-sm">
                   <span>

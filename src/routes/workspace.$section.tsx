@@ -1,3 +1,5 @@
+import { AppointmentAlternatives } from "@/components/AssistantExtras";
+import { ReviewCenter } from "@/components/ReviewCenter";
 import { ContactsDirectory } from "@/components/ContactsDirectory";
 import { RescheduleButton } from "@/components/case-workflow/CaseWorkflow";
 import { CancelVisit } from "@/components/case-workflow/Management";
@@ -27,10 +29,12 @@ export const Route = createFileRoute("/workspace/$section")({
 });
 
 function title(value: string) {
+  if (value === "review") return "Review center";
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 const subtitles: Record<string, string> = {
+  review: "Review pending work and continue where you left off.",
   properties: "Your properties, their PMs, landlords and tenants, and all related events.",
   contacts: "People linked to your properties and events, with their roles and emails.",
   calendar: "Appointments for repairs, inspections and access.",
@@ -72,7 +76,9 @@ function WorkspaceSection() {
             {subtitles[section] ?? "Manage your property workspace."}
           </p>
         </div>
-        {section === "properties" ? (
+        {section === "review" ? (
+          <ReviewCenter />
+        ) : section === "properties" ? (
           <PropertiesSection
             selectedPropertyId={search.property ?? null}
             onSelectProperty={(property) => {
@@ -322,6 +328,27 @@ function CalendarSection({ onAsk }: { onAsk: (a: { id: number; title: string }) 
                 </option>
               ))}
           </select>
+          <div className="sm:col-span-2">
+            <AppointmentAlternatives
+              action="appointment.create"
+              args={{
+                propertyId: Number(form.propertyId),
+                startsAt: new Date(form.when).getTime(),
+                endsAt: new Date(form.when).getTime() + Number(form.duration) * 60000,
+                attendeeEmails: form.attendees
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              }}
+              onSelect={(args) => {
+                const d = new Date(Number(args["startsAt"]));
+                const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+                  .toISOString()
+                  .slice(0, 16);
+                setForm((f) => ({ ...f, when: local }));
+              }}
+            />
+          </div>
           <button
             disabled={!form.propertyId}
             className="rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground disabled:opacity-50 sm:col-span-2"

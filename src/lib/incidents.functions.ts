@@ -202,6 +202,18 @@ export const linkEmail = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const userId = await requireUserId();
     const db = await database();
+    const [email] = await db
+      .select()
+      .from(emailMessages)
+      .where(and(eq(emailMessages.userId, userId), eq(emailMessages.id, data.emailId)));
+    if (!email) throw new Error("Email not found");
+    if (data.requestId) {
+      const [request] = await db
+        .select()
+        .from(repairRequests)
+        .where(and(eq(repairRequests.userId, userId), eq(repairRequests.id, data.requestId)));
+      if (!request) throw new Error("Request not found");
+    }
     await db
       .update(emailMessages)
       .set({ requestId: data.requestId })
@@ -214,15 +226,18 @@ export const addNote = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const userId = await requireUserId();
     const db = await database();
-    await db.insert(requestEvents).values({
-      userId,
-      requestId: data.requestId,
-      at: Date.now(),
-      kind: "note",
-      text: data.text,
-      actor: "Property Manager",
-    });
-    return { ok: true as const };
+    const [saved] = await db
+      .insert(requestEvents)
+      .values({
+        userId,
+        requestId: data.requestId,
+        at: Date.now(),
+        kind: "note",
+        text: data.text,
+        actor: "Property Manager",
+      })
+      .returning();
+    return { ok: true as const, id: saved!.id };
   });
 
 const aiResult = z.object({
@@ -239,7 +254,8 @@ export const analyzeIncident = createServerFn({ method: "POST" })
   .validator(z.object({ id: requestId }))
   .handler(async ({ data }) => {
     const userId = await requireUserId();
-    const { aiConfigured, deepSeekModelOptions, fetchDeepSeek } = await import("./ai-gateway.server");
+    const { aiConfigured, deepSeekModelOptions, fetchDeepSeek } =
+      await import("./ai-gateway.server");
     if (!aiConfigured()) return { ok: false as const, code: "NOT_CONFIGURED" as const };
 
     const db = await database();

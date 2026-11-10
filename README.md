@@ -115,3 +115,16 @@ The AI chat now prepares real operations across contacts, properties, events, in
 - Appointments have explicit end times and attendees. Atomic overlap checks cover the same property or attendee. Rescheduling/cancellation prepares separate notification drafts; this is the site's internal calendar, not Google Calendar synchronization.
 
 Apply `0012_assistant_workspace.sql` to **local D1 only** for this preview. Configure a valid `DEEPSEEK_API_KEY` in the ignored `.env.local` and restart the dev process after changing it. Do not put secrets in frontend variables. No remote migration, GitHub push or Cloudflare deployment is part of this implementation.
+
+## Inbox follow-through and review center (local preview)
+
+Apply `0013_assistant_followthrough.sql` to local D1 after 0012. This adds conversation archive/progress/stop state, reversible email triage classification, and scoped undo receipts. It does not configure scheduled jobs or send mail.
+
+- Inbox emails expose address/contact candidates, existing-case selection and an editable new-case/link plan. Classification as “not a repair” is reversible and leaves Gmail unchanged. `/inbox?email=<id>` opens the original source.
+- Incoming linked mail can prepare a summary and independent next-step cards. Quote decisions still require matching evidence and individual confirmation. Missing recipients are caught before drafting and can be added through a separate review card.
+- `/workspace/review` collects outstanding chat steps, case drafts, due follow-ups and unreviewed emails, including pending work from archived conversations. Open a specific conversation or case to review and execute; no bulk mail sending.
+- Conversation search includes plan property/case context; rename/archive/restore retain history. Progress reflects actual preparation/lookup/execution stages. Stop is cooperative: an in-flight operation may finish, but later steps stop. Preparation interrupted by a lost connection becomes available again after its lease expires.
+- Action cards show before/after changes and actual source email text. Literal text matches are explicitly distinguished from interpreted values. The source is evidence to inspect, not automatic approval.
+- Uncertain creation/update results can be reconciled with an owned matching record without repeating a write. Unsupported outcomes can be acknowledged and dismissed, never silently marked successful. Existing email delivery reconciliation remains separate.
+- Existing-contact edits, property-note-only edits, and internal case notes created through chat have undo receipts. Undo compares current values atomically and refuses to overwrite later changes. Case-note withdrawal retains a timeline entry. Sent email cannot be undone.
+- Searchable record selectors, inline missing-contact creation and checkbox attachment selection/preview support completing action cards. Internal-calendar alternatives offer five available starts within 14 days (08:00–18:00 Sydney); save rechecks overlaps. Property cards show PM/landlord/tenant completeness with direct edit access.

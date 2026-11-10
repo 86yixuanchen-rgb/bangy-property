@@ -1,6 +1,7 @@
 import { z } from "zod";
 const emailOrEmpty = z.union([z.string().trim().toLowerCase().email().max(200), z.literal("")]);
 export const assistantContext = z.object({
+  evidenceEmailIds: z.array(z.string().min(1).max(300)).max(10).optional(),
   propertyId: z.number().int().positive().optional(),
   appointmentId: z.number().int().positive().optional(),
   emailId: z.string().min(1).max(300).optional(),

@@ -1,3 +1,9 @@
+import {
+  manageConversation,
+  stopAssistant,
+  undoAssistantChange,
+} from "@/lib/assistant-followthrough.functions";
+import { ActionEvidence, AppointmentAlternatives, RecoverAction } from "./AssistantExtras";
 import { useBlocker } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -23,6 +29,7 @@ import {
   editAssistantStep,
   executeAssistantPlan,
   checkAssistantDelivery,
+  prepareEmailCorrection,
 } from "@/lib/assistant-workspace.functions";
 import { getCaseFile } from "@/lib/case-workflow.functions";
 import { AssistantFields } from "./AssistantFields";
@@ -32,14 +39,27 @@ export function AssistantPanel({
   onClose,
   context,
   contextLabel,
+  initialSessionId,
+  initialStepId,
 }: {
+  initialSessionId?: string | undefined;
+  initialStepId?: string | undefined;
   onClose: () => void;
   context?: AssistantContext | undefined;
   contextLabel?: string | undefined;
 }) {
   const { user } = useAuth();
   const qc = useQueryClient();
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(initialSessionId ?? null);
+  const [sessionSearch, setSessionSearch] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+  const [contextOnly, setContextOnly] = useState(false);
+  const [rename, setRename] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const [undoTarget, setUndoTarget] = useState<string | null>(null);
+  useEffect(() => {
+    if (initialSessionId) setSelected(initialSessionId);
+  }, [initialSessionId]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
@@ -55,13 +75,28 @@ export function AssistantPanel({
     queryKey: ["assistant-sessions", user?.email],
     queryFn: () => listAssistantSessions(),
   });
-  const sessionId = selected ?? sessions.data?.[0]?.id;
+  const sessionId = selected ?? sessions.data?.find((s) => !s.archivedAt)?.id;
   const chat = useQuery({
     queryKey: ["assistant-conversation", user?.email, sessionId],
     queryFn: () => getAssistantConversation({ data: { sessionId: sessionId! } }),
     enabled: Boolean(sessionId),
-    refetchInterval: busy ? false : 10000,
+    refetchInterval: busy ? 1000 : 5000,
   });
+  const activeSession = sessions.data?.find((s) => s.id === sessionId);
+  const visibleSessions = sessions.data?.filter(
+    (s) =>
+      (showArchived ? Boolean(s.archivedAt) : !s.archivedAt) &&
+      `${s.title} ${s.contextText ?? ""}`.toLowerCase().includes(sessionSearch.toLowerCase()) &&
+      (!contextOnly ||
+        !context ||
+        s.contexts?.some(
+          (c) =>
+            (context.propertyId && c.propertyId === context.propertyId) ||
+            (context.requestId && c.requestId === context.requestId),
+        )),
+  );
+  const runningPlan = chat.data?.plans.find((p) => p.state === "running");
+  const serverBusy = Boolean(chat.data?.session?.runId || runningPlan);
   const navigationSince = useRef(Date.now());
   const navigated = useRef(new Set<string>());
   useEffect(() => {
@@ -91,6 +126,16 @@ export function AssistantPanel({
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: "smooth" });
   }, [chat.data?.messages.length, chat.data?.plans.length, busy]);
+  const jumpedTo = useRef("");
+  useEffect(() => {
+    if (!initialStepId || jumpedTo.current === initialStepId) return;
+    const element = document.getElementById(`assistant-step-${initialStepId}`);
+    if (element) {
+      if (element instanceof HTMLDetailsElement) element.open = true;
+      element.scrollIntoView({ block: "center" });
+      jumpedTo.current = initialStepId;
+    }
+  }, [chat.data, initialStepId]);
   async function refresh() {
     await qc.invalidateQueries();
   }
@@ -106,11 +151,12 @@ export function AssistantPanel({
     } finally {
       lock.current = false;
       setBusy(false);
+      setStopping(false);
       await refresh();
     }
   }
   async function ensureSession() {
-    if (sessionId) return sessionId;
+    if (sessionId && !activeSession?.archivedAt) return sessionId;
     const next = await createAssistantSession();
     setSelected(next.id);
     return next.id;
@@ -159,6 +205,7 @@ export function AssistantPanel({
     if (adding && Object.keys(newArgs).length) await addAction();
   }
   async function ask(q: string) {
+    if (serverBusy) return;
     if (!q.trim()) return;
     if (dirty) {
       setError("Save or discard the edited action before sending another instruction.");
@@ -198,39 +245,61 @@ export function AssistantPanel({
           Download file
         </button>
       ) : null}
-      {r.rows?.map((row, i) => (
-        <div key={i} className="rounded border bg-white p-2">
-          <p className="font-medium">
-            {String(
-              row["address"] ??
-                row["title"] ??
-                row["name"] ??
-                row["subject"] ??
-                row["supplier"] ??
-                row["id"] ??
-                "Result",
-            )}
-          </p>
-          {Object.entries(row)
-            .filter(
-              ([k, v]) =>
-                !["userId", "href", "body", "content"].includes(k) &&
-                v !== null &&
-                typeof v !== "object",
-            )
-            .slice(0, 10)
-            .map(([k, v]) => (
-              <p key={k} className="break-words">
-                {k}: {String(v)}
-              </p>
+      {r.rows?.length &&
+      r.rows.every((row) => "field" in row && "before" in row && "after" in row) ? (
+        <table className="w-full table-fixed text-left">
+          <thead>
+            <tr>
+              <th className="w-1/4 p-1">Field</th>
+              <th className="p-1">Before</th>
+              <th className="p-1">After</th>
+            </tr>
+          </thead>
+          <tbody>
+            {r.rows.map((row, i) => (
+              <tr key={i} className="border-t align-top">
+                <td className="break-words p-1 font-medium">{String(row["field"])}</td>
+                <td className="break-words p-1 text-muted-foreground">{String(row["before"])}</td>
+                <td className="break-words p-1">{String(row["after"])}</td>
+              </tr>
             ))}
-          {typeof row["href"] === "string" ? (
-            <a className="underline" href={row["href"]}>
-              Open →
-            </a>
-          ) : null}
-        </div>
-      ))}
+          </tbody>
+        </table>
+      ) : (
+        r.rows?.map((row, i) => (
+          <div key={i} className="rounded border bg-white p-2">
+            <p className="font-medium">
+              {String(
+                row["address"] ??
+                  row["title"] ??
+                  row["name"] ??
+                  row["subject"] ??
+                  row["supplier"] ??
+                  row["id"] ??
+                  "Result",
+              )}
+            </p>
+            {Object.entries(row)
+              .filter(
+                ([k, v]) =>
+                  !["userId", "href", "body", "content"].includes(k) &&
+                  v !== null &&
+                  typeof v !== "object",
+              )
+              .slice(0, 10)
+              .map(([k, v]) => (
+                <p key={k} className="break-words">
+                  {k}: {String(v)}
+                </p>
+              ))}
+            {typeof row["href"] === "string" ? (
+              <a className="underline" href={row["href"]}>
+                Open →
+              </a>
+            ) : null}
+          </div>
+        ))
+      )}
     </div>
   );
   return (
@@ -252,6 +321,38 @@ export function AssistantPanel({
           <X className="h-4 w-4" />
         </button>
       </div>
+      <div className="space-y-2 border-b p-3 text-xs">
+        <input
+          aria-label="Search conversations"
+          placeholder="Search conversations, property or case…"
+          className="w-full rounded border p-2"
+          value={sessionSearch}
+          onChange={(e) => setSessionSearch(e.target.value)}
+        />
+        <div className="flex flex-wrap gap-3">
+          <label>
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+            />{" "}
+            Archived
+          </label>
+          {(context?.propertyId || context?.requestId) && (
+            <label>
+              <input
+                type="checkbox"
+                checked={contextOnly}
+                onChange={(e) => setContextOnly(e.target.checked)}
+              />{" "}
+              This property / case
+            </label>
+          )}
+          <a className="underline" href="/workspace/review">
+            Review center →
+          </a>
+        </div>
+      </div>
       <div className="flex gap-2 border-b px-3 py-2">
         <select
           aria-label="Conversation"
@@ -268,7 +369,12 @@ export function AssistantPanel({
           <option value="" disabled>
             New conversation
           </option>
-          {sessions.data?.map((s) => (
+          {[
+            ...(visibleSessions ?? []),
+            ...(activeSession && !visibleSessions?.some((s) => s.id === activeSession.id)
+              ? [activeSession]
+              : []),
+          ].map((s) => (
             <option key={s.id} value={s.id}>
               {s.title}
             </option>
@@ -293,6 +399,64 @@ export function AssistantPanel({
           <span className="sr-only">New conversation</span>
         </button>
       </div>
+      {activeSession && (
+        <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 text-xs">
+          {rename !== null ? (
+            <>
+              <input
+                aria-label="Conversation name"
+                className="min-w-0 flex-1 rounded border p-1"
+                value={rename}
+                onChange={(e) => setRename(e.target.value)}
+              />
+              <button
+                className={button}
+                disabled={busy || !rename.trim()}
+                onClick={() =>
+                  void run(async () => {
+                    await manageConversation({ data: { id: activeSession.id, title: rename } });
+                    setRename(null);
+                  })
+                }
+              >
+                Save name
+              </button>
+              <button onClick={() => setRename(null)}>Cancel</button>
+            </>
+          ) : (
+            <>
+              <button
+                disabled={busy || serverBusy}
+                className={button}
+                onClick={() => setRename(activeSession.title)}
+              >
+                Rename
+              </button>
+              <button
+                disabled={busy || serverBusy}
+                className={button}
+                onClick={() =>
+                  navigateAway(
+                    () =>
+                      void run(async () => {
+                        await manageConversation({
+                          data: { id: activeSession.id, archive: !activeSession.archivedAt },
+                        });
+                      }),
+                  )
+                }
+              >
+                {activeSession.archivedAt ? "Restore conversation" : "Archive conversation"}
+              </button>
+            </>
+          )}
+          {activeSession.archivedAt && (
+            <p>
+              Archived conversation · restore to continue. Pending work remains in Review center.
+            </p>
+          )}
+        </div>
+      )}
       {contextLabel ? (
         <label className="flex items-center gap-2 border-b bg-muted/40 px-4 py-2 text-xs">
           <input
@@ -351,9 +515,13 @@ export function AssistantPanel({
                 <span className="text-[10px] uppercase text-muted-foreground">{p.state}</span>
               </div>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                {Object.entries(JSON.parse(p.context) as Record<string, unknown>)
-                  .map(([k, v]) => `${k}: ${v}`)
-                  .join(" · ") || "Workspace"}{" "}
+                {JSON.parse(p.context).emailId
+                  ? "Based on the selected email — source available on each action."
+                  : JSON.parse(p.context).requestId
+                    ? `Case ${JSON.parse(p.context).requestId}`
+                    : JSON.parse(p.context).propertyId
+                      ? "Selected property"
+                      : "Workspace"}{" "}
                 · Original context retained
               </p>
             </div>
@@ -372,7 +540,8 @@ export function AssistantPanel({
                 return (
                   <details
                     key={s.id}
-                    open={editable || s.state === "succeeded" || s.state === "uncertain"}
+                    id={`assistant-step-${s.id}`}
+                    open={editable || s.state === "uncertain"}
                     className="rounded-lg border p-3"
                   >
                     <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium">
@@ -391,6 +560,30 @@ export function AssistantPanel({
                     {deps.length ? (
                       <p className="mb-2 text-xs text-primary">After actions {deps.join(", ")}</p>
                     ) : null}
+                    {editable && (
+                      <p className="mb-2 text-xs text-amber-700">
+                        {def.fields.filter(
+                          (f) =>
+                            !f.optional &&
+                            f.default === undefined &&
+                            (args[f.key] === undefined ||
+                              args[f.key] === null ||
+                              args[f.key] === ""),
+                        ).length
+                          ? "Missing details — complete the highlighted fields below, then save to continue this plan."
+                          : "Check the details, then confirm this action."}
+                      </p>
+                    )}
+                    {[
+                      ...new Set<string>(
+                        [
+                          JSON.parse(p.context).emailId,
+                          ...(JSON.parse(p.context).evidenceEmailIds ?? []),
+                        ].filter(Boolean),
+                      ),
+                    ].map((emailId) => (
+                      <ActionEvidence key={emailId} emailId={emailId} args={args} />
+                    ))}
                     {s.state !== "succeeded" && (
                       <AssistantFields
                         fields={def.fields}
@@ -423,12 +616,102 @@ export function AssistantPanel({
                           })}
                       />
                     )}
+                    {editable &&
+                      ["appointment.create", "appointment.update"].includes(s.action) && (
+                        <AppointmentAlternatives
+                          action={s.action}
+                          args={args}
+                          onSelect={(a) => setEdits((prev) => ({ ...prev, [s.id]: a }))}
+                        />
+                      )}
+                    {s.state === "succeeded" &&
+                      chat.data?.receipts.some((r) => r.stepId === s.id && !r.undoneAt) && (
+                        <div className="my-2 text-xs">
+                          {undoTarget === s.id ? (
+                            <>
+                              <p>
+                                Restore the values from before this action? Later edits will not be
+                                overwritten.
+                              </p>
+                              <button
+                                className={button}
+                                disabled={busy}
+                                onClick={() =>
+                                  void run(async () => {
+                                    await undoAssistantChange({ data: { stepId: s.id } });
+                                    setUndoTarget(null);
+                                  })
+                                }
+                              >
+                                Confirm undo
+                              </button>
+                              <button className={button} onClick={() => setUndoTarget(null)}>
+                                Keep change
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              className={button}
+                              disabled={busy}
+                              onClick={() => setUndoTarget(s.id)}
+                            >
+                              Undo this change
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    {chat.data?.receipts.some((r) => r.stepId === s.id && r.undoneAt) && (
+                      <p className="text-xs">
+                        Change undone · original execution retained in history.
+                      </p>
+                    )}
+                    {s.state === "uncertain" &&
+                      !["email.send", "action.send"].includes(s.action) && (
+                        <RecoverAction stepId={s.id} action={s.action} onDone={refresh} />
+                      )}
+                    {editable &&
+                      s.action === "email.draft" &&
+                      s.error?.includes("Recipient is missing") && (
+                        <button
+                          className={button}
+                          disabled={busy || dirty}
+                          onClick={() => {
+                            setNewAction("event.person");
+                            setNewArgs({
+                              requestId: args["requestId"],
+                              email: args["to"],
+                              name: "",
+                              role: "",
+                            });
+                            setAdding(true);
+                          }}
+                        >
+                          Add missing recipient to this case
+                        </button>
+                      )}
                     {s.error ? (
                       <p role="alert" className="mt-2 break-words text-xs text-destructive">
                         {s.error}
                       </p>
                     ) : null}
                     {result ? renderResult(result) : null}
+                    {s.state === "succeeded" &&
+                      ["email.send", "action.send"].includes(s.action) && (
+                        <div className="my-2 text-xs">
+                          <p>Sent email cannot be undone.</p>
+                          <button
+                            className={button}
+                            disabled={busy}
+                            onClick={() =>
+                              void run(async () => {
+                                await prepareEmailCorrection({ data: { stepId: s.id } });
+                              })
+                            }
+                          >
+                            Write a correction
+                          </button>
+                        </div>
+                      )}
                     {s.action === "email.draft" && s.state === "succeeded" ? (
                       <button
                         className={button}
@@ -566,7 +849,7 @@ export function AssistantPanel({
                     })
                   }
                 >
-                  Confirm changes
+                  {p.state === "partial" ? "Continue remaining changes" : "Confirm changes"}
                 </button>
                 <p className="mt-2 text-[11px] text-muted-foreground">
                   Emails, cancellations, archiving and case closure need their own confirmation.
@@ -615,12 +898,36 @@ export function AssistantPanel({
             </div>
           </section>
         ) : null}
-        {busy ? (
-          <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-            <LoaderCircle className="h-4 w-4 animate-spin" />
-            Working on your request…
-          </p>
-        ) : null}
+        {(busy || serverBusy) && (
+          <div role="status" className="space-y-2 rounded border p-3 text-sm">
+            <p className="flex gap-2">
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+              {runningPlan
+                ? `Executing ${runningPlan.steps.find((s) => s.state === "running")?.position ?? "next"} / ${runningPlan.steps.length} · ${runningPlan.steps.filter((s) => s.state === "succeeded").length} completed`
+                : chat.data?.session?.activity || "Saving and refreshing records…"}
+            </p>
+            {sessionId && (
+              <button
+                className={button}
+                disabled={stopping}
+                onClick={async () => {
+                  setStopping(true);
+                  try {
+                    await stopAssistant({ data: { sessionId } });
+                  } catch (e) {
+                    setStopping(false);
+                    setError(e instanceof Error ? e.message : "Could not stop");
+                  }
+                }}
+              >
+                {stopping ? "Stopping after current operation…" : "Stop remaining work"}
+              </button>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Completed actions are retained. An operation already in progress may finish.
+            </p>
+          </div>
+        )}
         <div ref={end} />
       </div>
       {error ? (
@@ -697,7 +1004,7 @@ export function AssistantPanel({
           />
           <button
             aria-label="Send message"
-            disabled={busy || !input.trim()}
+            disabled={busy || serverBusy || Boolean(activeSession?.archivedAt) || !input.trim()}
             className="text-primary disabled:opacity-40"
           >
             <Send className="h-4 w-4" />

@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { InlineContact, FilePreview } from "./AssistantExtras";
 import { timeDisplay, sydneyTimestamp } from "@/lib/appointment-time";
 import { useQuery } from "@tanstack/react-query";
 import { getAssistantOptions } from "@/lib/assistant-workspace.functions";
@@ -17,74 +19,99 @@ function EntitySelect({
   disabled: boolean;
   refs: { value: string; label: string; entity?: string }[];
 }) {
-  const { data = [], isLoading } = useQuery({
+  const [search, setSearch] = useState("");
+  const {
+    data = [],
+    isLoading,
+    isError,
+  } = useQuery({
     queryKey: ["assistant-options", field.entity],
     queryFn: () => getAssistantOptions({ data: { entity: field.entity! } }),
   });
+  const filtered = data.filter((r) => r.label.toLowerCase().includes(search.toLowerCase()));
   if (field.type === "ids") {
     const selected = Array.isArray(value) ? value.map(String) : [];
     return (
-      <>
-        <select
-          aria-label={field.label}
-          multiple
-          size={Math.min(5, Math.max(2, data.length + refs.length))}
+      <div className="space-y-2">
+        <input
+          aria-label={`Search ${field.label}`}
+          placeholder="Search files…"
           className={cls}
-          disabled={disabled || isLoading}
-          value={selected}
-          onChange={(e) => onChange(Array.from(e.target.selectedOptions, (o) => o.value))}
-        >
-          {data
-            .filter((r) => !r.archived || selected.includes(r.id))
-            .map((r) => (
-              <option key={r.id} value={r.id}>
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <p>{selected.length} / 5 selected</p>
+        <div className="max-h-64 space-y-2 overflow-auto">
+          {[
+            ...filtered.filter((r) => !r.archived || selected.includes(r.id)),
+            ...refs.map((r) => ({ id: r.value, label: r.label })),
+          ].map((r) => (
+            <div key={r.id} className="rounded border p-2">
+              <label className="flex gap-2">
+                <input
+                  type="checkbox"
+                  disabled={disabled || (!selected.includes(r.id) && selected.length >= 5)}
+                  checked={selected.includes(r.id)}
+                  onChange={(e) =>
+                    onChange(
+                      e.target.checked ? [...selected, r.id] : selected.filter((id) => id !== r.id),
+                    )
+                  }
+                />
                 {r.label}
-                {r.archived ? " (unavailable)" : ""}
-              </option>
-            ))}
-          {refs.map((r) => (
-            <option key={r.value} value={r.value}>
-              {r.label}
-            </option>
+              </label>
+              {!r.id.startsWith("$") && <FilePreview id={r.id} />}
+            </div>
           ))}
-        </select>
-        <span className="block text-[10px]">
-          Select up to 5 case files. Hold Command/Ctrl to select more than one.
-        </span>
-      </>
+        </div>
+        {isError && <p role="alert">Could not load files.</p>}
+      </div>
     );
   }
   const known = data.some((r) => r.id === String(value)) || refs.some((r) => r.value === value);
   return (
-    <select
-      aria-label={field.label}
-      className={cls}
-      value={String(value ?? "")}
-      disabled={disabled || isLoading}
-      onChange={(e) =>
-        onChange(
-          e.target.value.startsWith("$")
-            ? e.target.value
-            : field.type === "number" && e.target.value
-              ? Number(e.target.value)
-              : e.target.value,
-        )
-      }
-    >
-      <option value="">{isLoading ? "Loading records…" : "Choose a record"}</option>
-      {value && !known ? <option value={String(value)}>{String(value)}</option> : null}
-      {data.map((r) => (
-        <option key={r.id} value={r.id}>
-          {r.label}
-          {r.archived ? " (archived / cancelled)" : ""}
-        </option>
-      ))}
-      {refs.map((r) => (
-        <option key={r.value} value={r.value}>
-          {r.label}
-        </option>
-      ))}
-    </select>
+    <div className="space-y-2">
+      <input
+        aria-label={`Search ${field.label}`}
+        placeholder={`Search ${field.label.toLowerCase()}…`}
+        className={cls}
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+      <select
+        aria-label={field.label}
+        className={cls}
+        value={String(value ?? "")}
+        disabled={disabled || isLoading}
+        onChange={(e) =>
+          onChange(
+            e.target.value.startsWith("$")
+              ? e.target.value
+              : field.type === "number" && e.target.value
+                ? Number(e.target.value)
+                : e.target.value,
+          )
+        }
+      >
+        <option value="">{isLoading ? "Loading records…" : "Choose a record"}</option>
+        {value && !known ? <option value={String(value)}>{String(value)}</option> : null}
+        {data
+          .filter((r) => filtered.includes(r) || r.id === String(value))
+          .map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.label}
+              {r.archived ? " (archived / cancelled)" : ""}
+            </option>
+          ))}
+        {refs.map((r) => (
+          <option key={r.value} value={r.value}>
+            {r.label}
+          </option>
+        ))}
+      </select>
+      {isError && <p role="alert">Could not load records.</p>}
+      {field.entity === "contacts" && !disabled && <InlineContact onCreated={onChange} />}
+    </div>
   );
 }
 export function AssistantFields({
@@ -106,7 +133,10 @@ export function AssistantFields({
       {fields.map((field) => {
         const value = args[field.key] ?? field.default ?? "";
         return (
-          <label key={field.key} className="block space-y-1 text-xs text-muted-foreground">
+          <div
+            key={field.key}
+            className={`block space-y-1 rounded text-xs text-muted-foreground ${!field.optional && field.default === undefined && (value === "" || value === null) ? "border-l-2 border-amber-400 pl-2" : ""}`}
+          >
             <span>
               {field.label}
               {field.optional ? " (optional)" : ""}
@@ -225,7 +255,7 @@ export function AssistantFields({
                 }}
               />
             )}
-          </label>
+          </div>
         );
       })}
     </div>
