@@ -4,7 +4,8 @@ import { handleAiGateway, fetchDeepSeek } from "@/lib/ai-gateway.server";
 import { signGatewayRequest } from "@/lib/db-gateway-protocol";
 const secret = "test-private-bridge-key";
 const payload = {
-  model: "deepseek-chat",
+  model: "deepseek-flash",
+  thinking: { type: "disabled" },
   temperature: 0.2,
   max_tokens: 100,
   response_format: { type: "json_object" },
@@ -54,8 +55,15 @@ describe("AI bridge", () => {
     const response = await handleAiGateway(await signed(payload));
     expect(response.status).toBe(200);
     expect(await response.text()).not.toContain("test-upstream-only-key");
-    const headers = vi.mocked(fetch).mock.calls[0]![1]!.headers;
-    expect(headers).toMatchObject({ Authorization: "Bearer test-upstream-only-key" });
+    const request = vi.mocked(fetch).mock.calls[0]![1]!;
+    expect(JSON.parse(String(request.body))).toEqual(payload);
+    expect(request.headers).toMatchObject({ Authorization: "Bearer test-upstream-only-key" });
+  });
+  it("rejects the retired model before calling the provider", async () => {
+    expect((await handleAiGateway(await signed({ ...payload, model: "deepseek-chat" }))).status).toBe(
+      400,
+    );
+    expect(fetch).not.toHaveBeenCalled();
   });
   it("rejects oversized token limits", async () => {
     expect((await handleAiGateway(await signed({ ...payload, max_tokens: 100000 }))).status).toBe(

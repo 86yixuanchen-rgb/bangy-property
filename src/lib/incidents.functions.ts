@@ -239,7 +239,7 @@ export const analyzeIncident = createServerFn({ method: "POST" })
   .validator(z.object({ id: requestId }))
   .handler(async ({ data }) => {
     const userId = await requireUserId();
-    const { aiConfigured, fetchDeepSeek } = await import("./ai-gateway.server");
+    const { aiConfigured, deepSeekModelOptions, fetchDeepSeek } = await import("./ai-gateway.server");
     if (!aiConfigured()) return { ok: false as const, code: "NOT_CONFIGURED" as const };
 
     const db = await database();
@@ -326,7 +326,7 @@ export const analyzeIncident = createServerFn({ method: "POST" })
       method: "POST",
       signal: AbortSignal.timeout(40000),
       body: JSON.stringify({
-        model: "deepseek-chat",
+        ...deepSeekModelOptions,
         temperature: 0.2,
         max_tokens: 2400,
         response_format: { type: "json_object" },

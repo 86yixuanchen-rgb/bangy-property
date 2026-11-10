@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { signGatewayRequest, verifyGatewayRequest } from "./db-gateway-protocol";
 
+export const deepSeekModelOptions = {
+  model: "deepseek-flash",
+  thinking: { type: "disabled" },
+} as const;
+
 export function aiConfigured() {
   return Boolean(
     process.env["DEEPSEEK_API_KEY"] ||
@@ -36,7 +41,8 @@ export async function fetchDeepSeek(init: RequestInit) {
 }
 const aiInput = z
   .object({
-    model: z.literal("deepseek-chat"),
+    model: z.literal(deepSeekModelOptions.model),
+    thinking: z.object({ type: z.literal(deepSeekModelOptions.thinking.type) }).strict(),
     temperature: z.number().min(0).max(1),
     max_tokens: z.number().int().positive().max(4000),
     response_format: z.object({ type: z.literal("json_object") }).strict(),

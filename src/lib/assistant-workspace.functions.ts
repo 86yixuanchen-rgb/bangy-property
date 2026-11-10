@@ -29,7 +29,7 @@ import {
   searchWorkspace,
 } from "./assistant-executor.server";
 import { loadAssistantSelection, propertyDraftFromSelection } from "./assistant-property.server";
-import { aiConfigured, fetchDeepSeek } from "./ai-gateway.server";
+import { aiConfigured, deepSeekModelOptions, fetchDeepSeek } from "./ai-gateway.server";
 const uuid = z.string().uuid();
 async function deps() {
   const { userId } = await auth();
@@ -638,7 +638,7 @@ export const askWorkspaceAssistant = createServerFn({ method: "POST" })
         const response = await fetchDeepSeek({
           method: "POST",
           body: JSON.stringify({
-            model: "deepseek-chat",
+            ...deepSeekModelOptions,
             temperature: 0.2,
             max_tokens: 4000,
             response_format: { type: "json_object" },

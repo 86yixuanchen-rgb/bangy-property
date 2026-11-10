@@ -95,7 +95,7 @@ export const askDeepSeek = createServerFn({ method: "POST" })
           "Review the property details below, then confirm to create it. Missing contact details can be added later. Nothing has been created yet.",
         propertyDraft: propertyDraftFromSelection(selection, data.question),
       };
-    const { aiConfigured, fetchDeepSeek } = await import("./ai-gateway.server");
+    const { aiConfigured, deepSeekModelOptions, fetchDeepSeek } = await import("./ai-gateway.server");
     if (!aiConfigured())
       return {
         ok: false as const,
@@ -161,7 +161,7 @@ export const askDeepSeek = createServerFn({ method: "POST" })
     const response = await fetchDeepSeek({
       method: "POST",
       body: JSON.stringify({
-        model: "deepseek-chat",
+        ...deepSeekModelOptions,
         temperature: 0.2,
         max_tokens: 1200,
         response_format: { type: "json_object" },

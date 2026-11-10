@@ -29,7 +29,7 @@ Banjg Property is an **AI-assisted repair coordination tool** for Australian pro
 | Forms | React Hook Form + Zod |
 | Auth | [Clerk](https://clerk.com) (`@clerk/tanstack-react-start` 1.7.x) |
 | Database | [Cloudflare D1](https://developers.cloudflare.com/d1/) (SQLite) + Drizzle ORM |
-| AI | DeepSeek API (`deepseek-chat` model) |
+| AI | DeepSeek API (`deepseek-flash` model) |
 | Build | Vite 8 + Rolldown, Nitro `cloudflare-module` preset (deploys to Cloudflare Workers) |
 | Testing | Vitest + Testing Library |
 
